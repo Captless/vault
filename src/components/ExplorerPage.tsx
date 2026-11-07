@@ -134,7 +134,6 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           </>
         )}
         {prot !== 'protected' && <button onClick={() => { setMenuId(null); setLockTarget({ type: kind, id, name }); resetLockWizard(); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Lock size={12} /> Lock</button>}
-        {prot === 'protected' && kind === 'folder' && <button onClick={async () => { setMenuId(null); const t = await getDecoyTree(id); setDecoyEdit({ folderId: id, name, enabled: !!t, treeName: t?.name ?? '', folders: (t?.folders ?? []).map(f => ({ id: f.id, name: f.name })), docs: (t?.docs ?? []).map(d => ({ ...d })) }); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><EyeOff size={12} /> Edit decoy</button>}
         <button onClick={() => { setMenuId(null); setRenameTarget({ type: kind, id, name }); setRenameValue(name); setRenameErr(''); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Pencil size={12} /> Rename</button>
         <button onClick={() => { setMenuId(null); setDeleteTarget({ type: kind, id, name }); }} className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-red-50 text-red-600 w-full text-left"><Trash2 size={12} /> Delete</button>
       </>
@@ -621,11 +620,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   function renderTree(parent: string | null, depth: number): React.ReactNode {
     const kids = treeChildren.get(parent) ?? [];
     return kids.map(f => {
-      const locked = f.protection === 'protected' && !getFolderKey(f.id);
+      const isProtected = f.protection === 'protected';
+      const locked = isProtected && !getFolderKey(f.id);
       const hasKidsFolders = (treeChildren.get(f.id)?.length ?? 0) > 0;
       const files = locked ? [] : (sidebarItems[f.id] || []);
       const hasFiles = foldersWithItems.has(f.id) || files.length > 0;
-      const canExpand = !locked && (hasKidsFolders || hasFiles);
+      const canExpand = isProtected || hasKidsFolders || hasFiles;
       const expanded = expandedFolders.has(f.id) && !locked;
       return (
         <div key={f.id}>
@@ -635,6 +635,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           >
             <button
               onClick={() => {
+                if (locked) { setUnlockPw(''); setUnlockErr(''); setInlineUnlockId(cur => (cur === f.id ? null : f.id)); void loadSidebarItems(f.id); return; }
                 if (!canExpand) return;
                 toggleExpand(f.id, () => void loadSidebarItems(f.id));
               }}
@@ -647,7 +648,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             </button>
             <button
               onClick={async () => {
-                if (f.protection === 'protected' && !getFolderKey(f.id)) {
+                if (locked) {
                   setUnlockPw(''); setUnlockErr('');
                   setInlineUnlockId(cur => (cur === f.id ? null : f.id));
                   const chain: string[] = [];
@@ -741,6 +742,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     lastRowClick.current = { id, at: now };
     const expanding = !expandedFolders.has(id);
     if (!expanding) {
+      // Re-lock protected folders on collapse (session key cleared) so next expand asks password.
+      if (getFolderKey(id)) {
+        import('../services/crypto.service').then(m => m.setFolderKey(id, null));
+        setSidebarItems(s => { const n = { ...s }; delete n[id]; return n; });
+      }
+      setInlineUnlockId(cur => (cur === id ? null : cur));
       setClosingFolders(s => { const n = new Set(s); n.add(id); return n; });
       window.setTimeout(() => {
         setExpandedFolders(s => { const n = new Set(s); n.delete(id); return n; });
@@ -869,10 +876,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     const kids = treeChildren.get(parent) ?? [];
     return kids.map(f => {
       const fname = folderName(f.id);
-      const locked = f.protection === 'protected' && !getFolderKey(f.id);
+      const isProtected = f.protection === 'protected';
+      const locked = isProtected && !getFolderKey(f.id);
       const hasSubfolders = (treeChildren.get(f.id)?.length ?? 0) > 0;
       const hasFiles = foldersWithItems.has(f.id) || (sidebarItems[f.id]?.length ?? 0) > 0;
-      const canExpand = !locked && (hasSubfolders || hasFiles);
+      const canExpand = isProtected || hasSubfolders || hasFiles;
       const expanded = expandedFolders.has(f.id);
       const nested = depth > 0;
       const anim = nested ? (closing ? 'row-slide-out' : 'row-slide-in') : '';
@@ -885,7 +893,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
               <div className={nested ? `${anim} ${innerPy}` : ''}>
                 <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
                   <button
-                    onClick={(e) => { e.stopPropagation(); if (!canExpand) return; toggleExpand(f.id, () => void loadSidebarItems(f.id)); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (locked) { setUnlockPw(''); setUnlockErr(''); setInlineUnlockId(cur => (cur === f.id ? null : f.id)); return; }
+                      if (!canExpand) return;
+                      toggleExpand(f.id, () => void loadSidebarItems(f.id));
+                    }}
                     className={`p-1 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${canExpand ? '' : 'invisible'}`}
                     aria-label={expanded ? `Collapse ${fname}` : `Expand ${fname}`}
                     aria-expanded={expanded}
