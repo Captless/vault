@@ -5,7 +5,14 @@
 }
 
 html, body, #root { height: 100%; margin: 0; }
+html { -webkit-text-size-adjust: 100%; }
 body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #fafafa; color: #18181b; -webkit-font-smoothing: antialiased; }
+
+/* Prevent iOS focus zoom (Safari zooms when form control font-size < 16px) */
+@media screen and (max-width: 768px) {
+  input, textarea, select { font-size: 16px !important; }
+}
+button, input, textarea, select, a { touch-action: manipulation; }
 
 .editor-content { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.6; }
 .editor-h1 { font-size: 1.4em; font-weight: 700; line-height: 1.2; margin: 0.4em 0; }
