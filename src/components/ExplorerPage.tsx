@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, EyeOff, Pencil } from 'lucide-react';
+import { Folder, FileText, File, Lock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, EyeOff, Pencil, Search, X } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -75,6 +75,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const lastRowClick = useRef<{ id: string; at: number }>({ id: '', at: 0 });
   // Decoy manager (edit decoy for a protected folder)
   const [decoyEdit, setDecoyEdit] = useState<{ folderId: string; name: string; enabled: boolean; treeName: string; folders: DecoyFolderDraft[]; docs: DecoyDocDraft[] } | null>(null);
+  // Global search (all folders/files with accessible names)
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchResults, setSearchResults] = useState<{ folders: { id: string; name: string; path: string; locked: boolean }[]; items: { id: string; name: string; kind: string; size?: number; parentId: string | null; path: string }[] } | null>(null);
+  const searchItemNames = useRef<Record<string, string>>({});
 
   function openMenuAt(id: string, e: React.MouseEvent) {
     const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
@@ -132,7 +137,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   const loadSidebarItems = useCallback(async (folderId: string | null) => {
     const key = folderId === 'root' ? null : folderId;
-    const listKey = folderId === 'root' ? 'root' : folderId;
+    const listKey = folderId === 'root' || folderId === null ? 'root' : folderId;
     try {
       const its = await listItems(key);
       const list: { id: string; kind: string; name: string; size?: number }[] = [];
@@ -303,6 +308,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   function openEditor(id: string) {
+    setSearchQuery('');
+    setSearchResults(null);
     setEditingId(id);
   }
 
@@ -650,8 +657,6 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     });
   }
 
-  const empty = folders.length === 0 && items.length === 0;
-
   // Decoy view lists
   const decoySubFolders = decoyMode ? decoyMode.tree.folders.filter(f => f.parentId === decoyMode.subId) : [];
   const decoyDocsHere = decoyMode ? decoyMode.tree.docs.filter(d => d.folderId === decoyMode.subId) : [];
@@ -728,6 +733,80 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     }
     for (const c of chain) path.push({ id: c.id, name: treeNames[c.id] ?? names[c.id] ?? 'Folder' });
     return path;
+  }
+
+  function pathStringForFolder(id: string | null): string {
+    if (!id) return 'All';
+    const f = treeFolders.find(x => x.id === id) || null;
+    return pathTo(f).map(c => c.name).join(' / ');
+  }
+
+  useEffect(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) { setSearchResults(null); setSearchBusy(false); return; }
+    let cancelled = false;
+    setSearchBusy(true);
+    const t = window.setTimeout(async () => {
+      try {
+        const folderHits = treeFolders
+          .map(f => {
+            const name = treeNames[f.id] ?? 'Folder';
+            const locked = f.protection === 'protected' && !getFolderKey(f.id);
+            return { id: f.id, name, path: pathStringForFolder(f.id), locked };
+          })
+          .filter(f => f.name.toLowerCase().includes(q))
+          .slice(0, 60);
+        const allItems = await db.items.toArray();
+        const itemHits: { id: string; name: string; kind: string; size?: number; parentId: string | null; path: string }[] = [];
+        for (const it of allItems) {
+          let nm = searchItemNames.current[it.id];
+          if (!nm) {
+            try { nm = (await getItemMeta(it)).name; searchItemNames.current[it.id] = nm; } catch { continue; }
+          }
+          if (!nm.toLowerCase().includes(q)) continue;
+          itemHits.push({ id: it.id, name: nm, kind: it.kind, size: it.size, parentId: it.parentId, path: pathStringForFolder(it.parentId) });
+          if (itemHits.length >= 80) break;
+        }
+        if (!cancelled) setSearchResults({ folders: folderHits, items: itemHits });
+      } finally {
+        if (!cancelled) setSearchBusy(false);
+      }
+    }, 220);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [searchQuery, treeFolders, treeNames]);
+
+  async function goToSearchFolder(id: string) {
+    const f = treeFolders.find(x => x.id === id);
+    if (!f) return;
+    setSearchQuery(''); setSearchResults(null);
+    await openFolder(f);
+  }
+
+  async function goToSearchItem(hit: { id: string; name: string; kind: string; size?: number; parentId: string | null }) {
+    if (hit.kind !== 'txt' && hit.kind !== 'md') {
+      // Navigate to its parent folder for non-editor files
+      if (hit.parentId) { const pf = treeFolders.find(x => x.id === hit.parentId); if (pf) { setSearchQuery(''); setSearchResults(null); await openFolder(pf); } }
+      else { setSearchQuery(''); setSearchResults(null); leaveCurrentFolder(); setLockedId(null); setParentId(null); setCrumbs([{ id: null, name: 'All' }]); }
+      return;
+    }
+    setSearchQuery(''); setSearchResults(null);
+    if (hit.parentId) {
+      const pf = treeFolders.find(x => x.id === hit.parentId) || null;
+      if (pf) {
+        leaveCurrentFolder();
+        setLockedId(null);
+        setCrumbs(pathTo(pf));
+        setParentId(pf.id);
+      }
+    } else {
+      leaveCurrentFolder();
+      setLockedId(null);
+      setParentId(null);
+      setCrumbs([{ id: null, name: 'All' }]);
+    }
+    // ensure names include the hit so editor chrome can resolve
+    setNames(n => ({ ...n, [hit.id]: hit.name }));
+    setEditingId(hit.id);
   }
 
   // File-explorer style rows: expanding a folder lists its subfolders inline.
@@ -912,7 +991,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 <tbody>
                   {(() => {
                     const editingFile = editingId ? (items.find(i => i.id === editingId) ?? Object.values(sidebarItems).flat().find(x => x.id === editingId)) : null;
-                    const editingName = editingId ? (names[editingId] || editingFile?.name || 'File') : null;
+                    const editingName = editingId ? (names[editingId] || (editingFile && 'name' in editingFile ? editingFile.name : '') || 'File') : null;
                     const decoyDoc = decoyEditingId && decoyMode ? decoyMode.tree.docs.find(d => d.id === decoyEditingId) : null;
                     const fileCrumb = editingId && editingName ? { id: editingId, name: editingName } : (decoyDoc ? { id: decoyDoc.id, name: decoyDoc.name } : null);
                     const displayCrumbs = fileCrumb ? [...crumbs, fileCrumb] : crumbs;
@@ -1109,7 +1188,60 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             </div>
           ) : (
             <div>
-              <div className="max-w-4xl mx-auto mt-4 mb-2 h-10">
+              <div className="max-w-4xl mx-auto mt-4 mb-2 px-3 sm:px-0">
+                <div className="relative">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="Search all folders and files..."
+                    className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                    aria-label="Search all folders and files"
+                  />
+                  {searchQuery && (
+                    <button type="button" onClick={() => { setSearchQuery(''); setSearchResults(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {searchQuery.trim() ? (
+                <div className="max-w-4xl mx-auto mb-4 border border-zinc-200 rounded-lg bg-white overflow-hidden">
+                  <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
+                    <span>{searchBusy ? 'Searching…' : `${(searchResults?.folders.length ?? 0) + (searchResults?.items.length ?? 0)} results`}</span>
+                    {!searchBusy && searchResults && searchResults.folders.length === 0 && searchResults.items.length === 0 && <span>No matches</span>}
+                  </div>
+                  {!searchBusy && searchResults && (searchResults.folders.length > 0 || searchResults.items.length > 0) && (
+                    <div className="max-h-[60vh] overflow-auto">
+                      {searchResults.folders.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
+                      {searchResults.folders.map(f => (
+                        <button key={f.id} type="button" onClick={() => void goToSearchFolder(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                          <Folder size={15} className="text-zinc-500 shrink-0" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{f.name}</span>
+                            <span className="block text-[11px] text-zinc-400 truncate">{f.path}{f.locked ? ' · locked' : ''}</span>
+                          </span>
+                          {f.locked && <Lock size={12} className="text-zinc-400 shrink-0" />}
+                        </button>
+                      ))}
+                      {searchResults.items.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
+                      {searchResults.items.map(it => (
+                        <button key={it.id} type="button" onClick={() => void goToSearchItem(it)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                          {it.kind === 'txt' || it.kind === 'md' ? <FileText size={15} className="text-zinc-400 shrink-0" /> : <File size={15} className="text-zinc-400 shrink-0" />}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{it.name}</span>
+                            <span className="block text-[11px] text-zinc-400 truncate">{it.path}</span>
+                          </span>
+                          <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{fmtSize(it.size)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+              <>
+              <div className="max-w-4xl mx-auto mt-0 mb-2 h-10">
                 {selectedCount > 0 && (
                   <div className="h-full flex items-center justify-between gap-2 px-3 bg-zinc-100 border border-zinc-200 rounded-lg text-sm">
                     <span className="text-zinc-700">{selectedCount} selected</span>
@@ -1146,7 +1278,6 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   {parentId && (() => {
                     const current = treeFolders.find(f => f.id === parentId) ?? folders.find(f => f.id === parentId);
                     if (!current) return null;
-                    const cname = folderName(current.id);
                     return (
                       <Fragment>
                         <tr className="bg-zinc-100 border-b-2 border-zinc-300">
@@ -1254,6 +1385,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   )}
                 </tbody>
               </table>
+              </>
+              )}
               {!lockedId && (
                 <div className="max-w-4xl mx-auto mt-2 mb-4 flex justify-start px-1">
                   <div className="relative">
