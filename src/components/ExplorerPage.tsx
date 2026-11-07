@@ -64,6 +64,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [foldersWithItems, setFoldersWithItems] = useState<Set<string>>(new Set());
   // Decoy view (wrong folder password)
   const [decoyMode, setDecoyMode] = useState<{ folderId: string; tree: DecoyTree; subId: string | null } | null>(null);
+  const [decoySearchQuery, setDecoySearchQuery] = useState('');
   // Inline editor (stays inside main layout: sidebar + header remain)
   const [editingId, setEditingId] = useState<string | null>(null);
   // Inline decoy editor (same: sidebar stays, doc opens as its own section)
@@ -556,6 +557,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   function goCrumb(c: { id: string | null; name: string }, idx: number) {
     if (decoyMode) {
+      setDecoySearchQuery('');
       setDecoyEditingId(null);
       if (idx === 0) {
         setDecoyMode(null);
@@ -962,7 +964,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         <nav className="flex-1 overflow-auto p-1.5">
           <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-zinc-400">All</p>
           <button
-            onClick={() => { leaveCurrentFolder(); if (decoyMode) setDecoyMode(null); setCrumbs([{ id: null, name: 'All' }]); setParentId(null); }}
+            onClick={() => { leaveCurrentFolder(); setDecoySearchQuery(''); if (decoyMode) setDecoyMode(null); setCrumbs([{ id: null, name: 'All' }]); setParentId(null); }}
             className={`w-full flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-zinc-100 ${parentId === null && !decoyMode ? 'bg-zinc-100 font-medium' : 'text-zinc-700'}`}
           >
             <FolderOpen size={12} className="text-zinc-500" /> ALL
@@ -1041,7 +1043,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               type="button"
                               onClick={() => {
                                 if (editingId) void closeEditor();
-                                else if (decoyMode && decoyEditingId) { setDecoyEditingId(null); goCrumb(crumbs[Math.max(0, crumbs.length - 2)], Math.max(0, crumbs.length - 2)); }
+                                else if (decoyMode && decoyEditingId) setDecoyEditingId(null);
                               }}
                               className="p-1 rounded text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 shrink-0"
                               aria-label="Back"
@@ -1095,132 +1097,202 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             </div>
           ) : decoyMode ? (
             <div>
-              <table className="w-full text-sm bg-white mx-auto max-w-4xl mt-4 mb-4 border border-zinc-200 rounded-lg overflow-visible">
-                <thead>
-                  <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
-                    <th className="px-3 py-2 font-medium">Name</th>
-                    <th className="px-3 py-2 font-medium w-20">Type</th>
-                    <th className="px-3 py-2 font-medium w-24 hidden sm:table-cell">Size</th>
-                    <th className="px-3 py-2 font-medium w-10"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="bg-zinc-100 border-b-2 border-zinc-300">
-                    <td className="px-3 py-1">
-                      <div className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 -mx-1 min-w-0">
+              {(() => {
+                const dq = decoySearchQuery.trim().toLowerCase();
+                const decoyFolderPath = (folderId: string | null): string => {
+                  const parts = ['All', decoyMode.tree.name];
+                  if (!folderId) return parts.join(' / ');
+                  const chain: typeof decoyMode.tree.folders = [];
+                  let cur = decoyMode.tree.folders.find(f => f.id === folderId);
+                  while (cur) { chain.unshift(cur); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
+                  for (const c of chain) parts.push(c.name);
+                  return parts.join(' / ');
+                };
+                const dFolderHits = dq ? decoyMode.tree.folders.filter(f => f.name.toLowerCase().includes(dq)).map(f => ({ id: f.id, name: f.name, path: decoyFolderPath(f.id) })) : [];
+                const dDocHits = dq ? decoyMode.tree.docs.filter(d => d.name.toLowerCase().includes(dq)).map(d => ({ id: d.id, name: d.name, kind: d.kind, path: decoyFolderPath(d.folderId) })) : [];
+                const openDecoyFolderById = (folderId: string) => {
+                  setDecoySearchQuery('');
+                  const chain: typeof decoyMode.tree.folders = [];
+                  let cur = decoyMode.tree.folders.find(f => f.id === folderId);
+                  while (cur) { chain.unshift(cur); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
+                  const crumbsNext: { id: string | null; name: string }[] = [{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }];
+                  for (const c of chain) crumbsNext.push({ id: null, name: c.name });
+                  setCrumbs(crumbsNext);
+                  setDecoyMode(m => m ? { ...m, subId: folderId } : m);
+                };
+                const openDecoyDocHit = (docId: string, folderId: string | null) => {
+                  setDecoySearchQuery('');
+                  if (folderId) openDecoyFolderById(folderId);
+                  else { setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }]); setDecoyMode(m => m ? { ...m, subId: null } : m); }
+                  openDecoyDoc(docId);
+                };
+                return (
+                  <>
+                    <div className="max-w-4xl mx-auto mt-4 mb-2 px-3 sm:px-0">
+                      <div className="relative">
+                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={decoySearchQuery}
+                          onChange={e => setDecoySearchQuery(e.target.value)}
+                          placeholder="Search all folders and files..."
+                          className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                          aria-label="Search decoy folders and files"
+                        />
+                        {decoySearchQuery && (
+                          <button type="button" onClick={() => setDecoySearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {dq ? (
+                      <div className="max-w-4xl mx-auto mb-4 border border-zinc-200 rounded-lg bg-white overflow-hidden">
+                        <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
+                          <span>{dFolderHits.length + dDocHits.length} results</span>
+                          {dFolderHits.length === 0 && dDocHits.length === 0 && <span>No matches</span>}
+                        </div>
+                        {(dFolderHits.length > 0 || dDocHits.length > 0) && (
+                          <div className="max-h-[60vh] overflow-auto">
+                            {dFolderHits.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
+                            {dFolderHits.map(f => (
+                              <button key={f.id} type="button" onClick={() => openDecoyFolderById(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                                <Folder size={15} className="text-zinc-500 shrink-0" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate">{f.name}</span>
+                                  <span className="block text-[11px] text-zinc-400 truncate">{f.path}</span>
+                                </span>
+                              </button>
+                            ))}
+                            {dDocHits.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
+                            {dDocHits.map(d => (
+                              <button key={d.id} type="button" onClick={() => openDecoyDocHit(d.id, decoyMode.tree.docs.find(x => x.id === d.id)?.folderId ?? null)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                                <FileText size={15} className="text-zinc-400 shrink-0" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate">{d.name}</span>
+                                  <span className="block text-[11px] text-zinc-400 truncate">{d.path}</span>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <table className="w-full text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-visible">
+                        <thead>
+                          <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
+                            <th className="px-3 py-2 font-medium">Name</th>
+                            <th className="px-3 py-2 font-medium w-20">Type</th>
+                            <th className="px-3 py-2 font-medium w-24 hidden sm:table-cell">Size</th>
+                            <th className="px-2 py-2 font-medium w-20"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="bg-zinc-100 border-b-2 border-zinc-300">
+                            <td className="px-3 py-1">
+                              <div className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 -mx-1 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => goCrumb(crumbs[Math.max(0, crumbs.length - 2)], Math.max(0, crumbs.length - 2))}
+                                  className="p-1 rounded text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 shrink-0"
+                                  aria-label="Go up one level"
+                                  title="Up one level"
+                                >
+                                  <Undo2 size={15} />
+                                </button>
+                                <nav aria-label="Folder path" className="flex items-center gap-0.5 min-w-0 flex-1 overflow-hidden text-sm">
+                                  {crumbs.map((c, i) => (
+                                    <span key={i} className="flex items-center gap-0.5 min-w-0 shrink">
+                                      {i > 0 && <ChevronRight size={12} className="text-zinc-400 shrink-0" />}
+                                      <button
+                                        type="button"
+                                        onClick={() => goCrumb(c, i)}
+                                        className={`truncate max-w-[10rem] px-0.5 py-0.5 rounded ${i === crumbs.length - 1 ? 'font-medium text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900'}`}
+                                        title={c.name}
+                                      >
+                                        {c.name}
+                                      </button>
+                                    </span>
+                                  ))}
+                                </nav>
+                              </div>
+                            </td>
+                            <td className="px-3 py-1 text-xs text-zinc-600 font-medium">Folder</td>
+                            <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">—</td>
+                            <td className="px-3 py-1"></td>
+                          </tr>
+                          {decoySubFolders.map(f => (
+                            <tr key={f.id} className="border-b border-zinc-100 hover:bg-zinc-50">
+                              <td className="px-3 py-1">
+                                <div className="flex items-center gap-1">
+                                  <span className="shrink-0 w-5 h-5" aria-hidden />
+                                  <button
+                                    onClick={() => { setDecoySearchQuery(''); setDecoyMode(m => m ? { ...m, subId: f.id } : m); setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }, { id: null, name: f.name }]); }}
+                                    className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
+                                  >
+                                    <Folder size={15} className="text-zinc-500 shrink-0" />
+                                    <span className="truncate">{f.name}</span>
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
+                              <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+                              <td className="px-3 py-1">
+                                <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, folders: decoyMode.tree.folders.filter(x => x.id !== f.id), docs: decoyMode.tree.docs.filter(x => x.folderId !== f.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
+                              </td>
+                            </tr>
+                          ))}
+                          {decoyDocsHere.map(d => (
+                            <tr key={d.id} className="border-b border-zinc-100 hover:bg-zinc-50">
+                              <td className="px-3 py-1">
+                                <div className="flex items-center gap-1">
+                                  <span className="shrink-0 w-5 h-5" aria-hidden />
+                                  <button onClick={() => { setDecoySearchQuery(''); openDecoyDoc(d.id); }} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                                    <FileText size={15} className="text-zinc-500 shrink-0" />
+                                    <span className="truncate">{d.name}</span>
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
+                              <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+                              <td className="px-3 py-1">
+                                <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, docs: decoyMode.tree.docs.filter(x => x.id !== d.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
+                              </td>
+                            </tr>
+                          ))}
+                          {decoySubFolders.length === 0 && decoyDocsHere.length === 0 && (
+                            <tr><td colSpan={4} className="px-3 py-10 text-center text-sm text-zinc-500">This folder is empty. Create or upload to get started.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    )}
+                    <div className="max-w-4xl mx-auto mt-2 mb-4 flex justify-start px-1">
+                      <div className="relative">
                         <button
                           type="button"
-                          onClick={() => goCrumb(crumbs[Math.max(0, crumbs.length - 2)], Math.max(0, crumbs.length - 2))}
-                          className="p-1 rounded text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 shrink-0"
-                          aria-label="Go up one level"
-                          title="Up one level"
+                          onClick={openPlusMenu}
+                          className="flex h-11 w-11 items-center justify-center rounded-full bg-zinc-900 text-white hover:bg-zinc-800 shadow-md"
+                          aria-label="Add"
+                          aria-haspopup="menu"
+                          aria-expanded={folderActionsOpen}
+                          title="Create in decoy"
                         >
-                          <Undo2 size={15} />
+                          <Plus size={20} />
                         </button>
-                        <nav aria-label="Folder path" className="flex items-center gap-0.5 min-w-0 flex-1 overflow-hidden text-sm">
-                          {crumbs.map((c, i) => (
-                            <span key={i} className="flex items-center gap-0.5 min-w-0 shrink">
-                              {i > 0 && <ChevronRight size={12} className="text-zinc-400 shrink-0" />}
-                              <button
-                                type="button"
-                                onClick={() => goCrumb(c, i)}
-                                className={`truncate max-w-[10rem] px-0.5 py-0.5 rounded ${i === crumbs.length - 1 ? 'font-medium text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900'}`}
-                                title={c.name}
-                              >
-                                {c.name}
-                              </button>
-                            </span>
-                          ))}
-                        </nav>
+                        {folderActionsOpen && plusMenuPos && (
+                          <>
+                            <button aria-hidden tabIndex={-1} onClick={closePlusMenu} className="fixed inset-0 z-30 cursor-default" />
+                            <div className="fixed z-40 w-48 border border-zinc-200 bg-white rounded-md shadow-lg py-1 max-h-[calc(100vh-16px)] overflow-auto" role="menu" style={{ top: plusMenuPos.top, bottom: plusMenuPos.bottom, left: plusMenuPos.left }}>
+                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, folders: [...decoyMode.tree.folders, { id: newDecoyId(), parentId: decoyMode.subId, name: 'New folder' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
+                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, docs: [...decoyMode.tree.docs, { id: newDecoyId(), folderId: decoyMode.subId, name: 'New document.txt', kind: 'txt', text: '' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New document</button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                    </td>
-                    <td className="px-3 py-1 text-xs text-zinc-600 font-medium">Folder</td>
-                    <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">—</td>
-                    <td className="px-3 py-1"></td>
-                  </tr>
-                  {decoySubFolders.map(f => (
-                    <tr key={f.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                      <td className="px-3 py-1">
-                        <div className="flex items-center gap-1">
-                          <span className="shrink-0 w-5 h-5" aria-hidden />
-                          <button
-                            onClick={() => {
-                              setDecoyMode(m => m ? { ...m, subId: f.id } : m);
-                              setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }, { id: null, name: f.name }]);
-                            }}
-                            className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
-                          >
-                            <Folder size={15} className="text-zinc-500 shrink-0" />
-                            <span className="truncate">{f.name}</span>
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
-                      <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                      <td className="px-3 py-1">
-                        <button
-                          onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, folders: decoyMode.tree.folders.filter(x => x.id !== f.id), docs: decoyMode.tree.docs.filter(x => x.folderId !== f.id) }); }}
-                          className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50"
-                          aria-label="Delete decoy folder"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {decoyDocsHere.map(d => (
-                    <tr key={d.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                      <td className="px-3 py-1">
-                        <div className="flex items-center gap-1">
-                          <span className="shrink-0 w-5 h-5" aria-hidden />
-                          <button onClick={() => openDecoyDoc(d.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                            <FileText size={15} className="text-zinc-500 shrink-0" />
-                            <span className="truncate">{d.name}</span>
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
-                      <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                      <td className="px-3 py-1">
-                        <button
-                          onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, docs: decoyMode.tree.docs.filter(x => x.id !== d.id) }); }}
-                          className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50"
-                          aria-label="Delete decoy document"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {decoySubFolders.length === 0 && decoyDocsHere.length === 0 && (
-                    <tr><td colSpan={4} className="px-3 py-10 text-center text-sm text-zinc-500">This folder is empty. Create or upload to get started.</td></tr>
-                  )}
-                </tbody>
-              </table>
-              <div className="max-w-4xl mx-auto mt-2 mb-4 flex justify-start px-1">
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={openPlusMenu}
-                    className="flex h-11 w-11 items-center justify-center rounded-full bg-zinc-900 text-white hover:bg-zinc-800 shadow-md"
-                    aria-label="Add"
-                    aria-haspopup="menu"
-                    aria-expanded={folderActionsOpen}
-                    title="Create in decoy"
-                  >
-                    <Plus size={20} />
-                  </button>
-                  {folderActionsOpen && plusMenuPos && (
-                    <>
-                      <button aria-hidden tabIndex={-1} onClick={closePlusMenu} className="fixed inset-0 z-30 cursor-default" />
-                      <div className="fixed z-40 w-48 border border-zinc-200 bg-white rounded-md shadow-lg py-1 max-h-[calc(100vh-16px)] overflow-auto" role="menu" style={{ top: plusMenuPos.top, bottom: plusMenuPos.bottom, left: plusMenuPos.left }}>
-                        <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, folders: [...decoyMode.tree.folders, { id: newDecoyId(), parentId: decoyMode.subId, name: 'New folder' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
-                        <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, docs: [...decoyMode.tree.docs, { id: newDecoyId(), folderId: decoyMode.subId, name: 'New document.txt', kind: 'txt', text: '' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New document</button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           ) : (
             <div>
@@ -1523,11 +1595,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           <p className="text-xs text-zinc-500">Your files stay encrypted with the same key — only the wrapping key changes.</p>
           <div>
             <label className="block text-xs font-medium text-zinc-600 mb-1.5">Current password</label>
-            <input type="password" id="set-cur" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
+            <input type="password" id="set-cur" name="vault-settings-cur" autoComplete="new-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-600 mb-1.5">New password</label>
-            <input type="password" id="set-new" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
+            <input type="password" id="set-new" name="vault-settings-new" autoComplete="new-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
           </div>
           <p id="set-msg" className="text-xs" />
           <div className="flex justify-between pt-1">
@@ -1542,7 +1614,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           <p className="text-xs text-zinc-500">Encrypted with your master password. Restore replaces everything in this vault.</p>
           <div>
             <label className="block text-xs font-medium text-zinc-600 mb-1.5">Master password</label>
-            <input type="password" id="bk-pw" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
+            <input type="password" id="bk-pw" name="vault-backup-pw" autoComplete="new-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
           </div>
           <p id="bk-msg" className="text-xs" />
           <div className="flex gap-2 flex-wrap pt-1">
