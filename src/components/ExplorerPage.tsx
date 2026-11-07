@@ -85,6 +85,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [createTargetParentId, setCreateTargetParentId] = useState<string | null | undefined>(undefined); // undefined = use current parentId
   const uploadHereRef = useRef<HTMLInputElement>(null);
   const [uploadTargetId, setUploadTargetId] = useState<string | null>(null);
+  // Inline unlock for locked folders (expand/collapse model, no navigation)
+  const [inlineUnlockId, setInlineUnlockId] = useState<string | null>(null);
 
   function openMenuAt(id: string, e: React.MouseEvent) {
     const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
@@ -328,31 +330,49 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setEditingId(id);
   }
 
-  // Navigate into a folder. Locked folders open in place: the main area shows
-  // an inline password card instead of the file list (no popup dialog).
+  // Navigate/open folder. In expand/collapse model, locked folders unlock inline (no navigation).
   async function openFolder(f: DbFolder) {
     const { getFolderKey } = await import('../services/crypto.service');
     if (f.protection === 'protected' && !getFolderKey(f.id)) {
       setUnlockPw(''); setUnlockErr('');
-      setLockedId(f.id);
-      setCrumbs(pathTo(f));
-      setParentId(f.id);
+      setInlineUnlockId(f.id);
+      // reveal in tree without changing current directory
+      const chain: string[] = [];
+      let cur: DbFolder | undefined = f;
+      while (cur?.parentId) { chain.push(cur.parentId); cur = treeFolders.find(x => x.id === cur!.parentId); }
+      if (chain.length) setExpandedFolders(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
+      setLockedId(null);
       return;
     }
+    setInlineUnlockId(null);
     setLockedId(null);
     setCrumbs(pathTo(f));
     setParentId(f.id);
   }
 
-  async function doUnlock() {
-    if (!lockedId) return;
+  async function doUnlock(targetId?: string | null) {
+    const id = targetId ?? inlineUnlockId ?? lockedId;
+    if (!id) return;
     setBusy(true); setUnlockErr('');
-    const ok = await unlockFolder(lockedId, unlockPw);
+    const ok = await unlockFolder(id, unlockPw);
     setBusy(false);
-    if (ok) { const unlockedId = lockedId; setLockedId(null); setUnlockPw(''); await load(); void loadSidebarItems(unlockedId); return; }
+    if (ok) {
+      setInlineUnlockId(cur => (cur === id ? null : cur));
+      setLockedId(cur => (cur === id ? null : cur));
+      setUnlockPw('');
+      setExpandedFolders(s => new Set(s).add(id));
+      await load();
+      void loadSidebarItems(id);
+      return;
+    }
     // Wrong password → decoy view if one exists (silent, no error)
-    const entered = await enterDecoyView(lockedId);
-    if (entered) { setLockedId(null); setUnlockPw(''); return; }
+    const entered = await enterDecoyView(id);
+    if (entered) {
+      setInlineUnlockId(cur => (cur === id ? null : cur));
+      setLockedId(cur => (cur === id ? null : cur));
+      setUnlockPw('');
+      return;
+    }
     setUnlockErr('Incorrect password.');
   }
 
@@ -628,22 +648,18 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             <button
               onClick={async () => {
                 if (f.protection === 'protected' && !getFolderKey(f.id)) {
-                  leaveCurrentFolder();
                   setUnlockPw(''); setUnlockErr('');
-                  setLockedId(f.id);
-                  const path: { id: string | null; name: string }[] = [{ id: null, name: 'All' }];
-                  let cur: DbFolder | undefined = f;
-                  const chain: DbFolder[] = [];
-                  while (cur) { chain.unshift(cur); cur = cur.parentId ? treeFolders.find(x => x.id === cur!.parentId) : undefined; }
-                  for (const c of chain) path.push({ id: c.id, name: treeNames[c.id] ?? 'Folder' });
-                  setCrumbs(path);
-                  setParentId(f.id);
-                  setExpandedFolders(s => { const n = new Set(s); n.delete(f.id); return n; });
+                  setInlineUnlockId(cur => (cur === f.id ? null : f.id));
+                  const chain: string[] = [];
+                  let p: DbFolder | undefined = f;
+                  while (p?.parentId) { chain.push(p.parentId); p = treeFolders.find(x => x.id === p!.parentId); }
+                  setExpandedFolders(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
+                  void loadSidebarItems(f.id);
                   return;
                 }
                 if (canExpand) toggleExpand(f.id, () => void loadSidebarItems(f.id));
               }}
-              title={locked ? 'Locked folder — unlock to access' : (canExpand ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder')}
+              title={locked ? 'Locked folder — unlock' : (canExpand ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder')}
               className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left truncate min-w-0"
             >
               <Folder size={12} className="shrink-0 text-zinc-500" />
@@ -879,10 +895,15 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   </button>
                   <button
                     onClick={() => {
-                      if (locked) { void openFolder(f); return; }
+                      if (locked) {
+                        setUnlockPw(''); setUnlockErr('');
+                        setInlineUnlockId(cur => (cur === f.id ? null : f.id));
+                        void loadSidebarItems(f.id);
+                        return;
+                      }
                       if (canExpand) toggleExpand(f.id, () => void loadSidebarItems(f.id));
                     }}
-                    title={locked ? 'Locked folder — unlock to access' : (canExpand ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder')}
+                    title={locked ? 'Locked folder — unlock' : (canExpand ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder')}
                     className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
                   >
                     <Folder size={15} className="text-zinc-500 shrink-0" />
@@ -907,9 +928,31 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
               </div>
             </td>
           </tr>
+          {inlineUnlockId === f.id && (
+            <tr className="border-b border-zinc-100 bg-zinc-50/40">
+              <td colSpan={4} className="px-3 py-3">
+                <div style={{ paddingLeft: (depth + 1) * 16 }}>
+                  <form onSubmit={(e) => { e.preventDefault(); void doUnlock(f.id); }} className="max-w-sm space-y-2">
+                    <p className="text-xs text-zinc-600 flex items-center gap-1.5"><Lock size={12} /> Enter password for <span className="font-medium text-zinc-800">{fname}</span></p>
+                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Folder password" autoFocus className="w-full border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
+                    {unlockErr && <p className="text-xs text-red-600">{unlockErr}</p>}
+                    <div className="flex items-center gap-2">
+                      <button type="submit" disabled={busy} className="px-3 py-1.5 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
+                      <button type="button" onClick={() => { setInlineUnlockId(null); setUnlockPw(''); setUnlockErr(''); }} className="px-3 py-1.5 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
+                    </div>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          )}
           {(expandedFolders.has(f.id) || closingFolders.has(f.id)) && !locked && (
             <>
               {renderFolderRows(f.id, depth + 1, closingFolders.has(f.id))}
+              {Array.isArray(sidebarItems[f.id]) && (treeChildren.get(f.id)?.length ?? 0) === 0 && (sidebarItems[f.id] || []).length === 0 && (
+                <tr className="border-b border-zinc-100 bg-zinc-50/30">
+                  <td colSpan={4} className="px-3 py-2 text-xs text-zinc-500" style={{ paddingLeft: (depth + 1) * 16 + 12 }}>This folder is empty.</td>
+                </tr>
+              )}
               {(sidebarItems[f.id] || []).map(it => {
                 const childClosing = closingFolders.has(f.id);
                 const childAnim = childClosing ? 'row-slide-out' : 'row-slide-in';
