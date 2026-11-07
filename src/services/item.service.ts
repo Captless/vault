@@ -117,3 +117,24 @@ export async function uploadFile(parentId: string | null, file: File, onProgress
   await db.items.add(it);
   return it;
 }
+
+export async function readFileItem(it: DbItem): Promise<{ bytes: Uint8Array; mime: string; name: string }> {
+  const key = await resolveKeyForParent(it.parentId);
+  if (!key) throw new Error('locked');
+  if (!it.payloadIv || !it.payloadEnc) throw new Error('No file data');
+  const ab = await decryptBytes(key, { iv: it.payloadIv, ct: it.payloadEnc }, 'item-payload');
+  const bytes = new Uint8Array(ab);
+  let name = 'file';
+  let mime = it.mime || '';
+  try {
+    const meta = await decryptJson<ItemMeta>(key, { iv: it.metaIv, ct: it.metaEnc }, 'item-meta');
+    if (meta.name) name = meta.name;
+    if (meta.mime) mime = meta.mime;
+  } catch { /* use fallbacks */ }
+  if (!mime) {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    if (ext === 'pdf') mime = 'application/pdf';
+    else if (['png','jpg','jpeg','gif','webp','bmp','svg','avif'].includes(ext)) mime = `image/${ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext}`;
+  }
+  return { bytes, mime, name };
+}

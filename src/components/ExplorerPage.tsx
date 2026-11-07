@@ -6,13 +6,14 @@ import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
 import { encryptBytes, decryptBytes } from '../security/encryption';
 import { listFolders, createFolder, getFolderMeta, deleteFolder } from '../services/folder.service';
-import { listItems, createTxt, createMd, deleteItem, getItemMeta, uploadFile } from '../services/item.service';
+import { listItems, createTxt, createMd, deleteItem, getItemMeta, uploadFile, readFileItem } from '../services/item.service';
 import { unlockFolder, clearSession, getFolderKey } from '../services/crypto.service';
 import { getDecoyTree, saveDecoyTree, deleteDecoyTree, newDecoyId, getDecoy } from '../services/decoy.service';
 import Dialog from './Dialog';
 import EditorPage from './EditorPage';
 import DecoyEditorInline from './DecoyEditorInline';
 import type { DbFolder, DbItem, DecoyTree } from '../types';
+import { APP_VERSION_LABEL } from '../app/version';
 
 type CreateKind = 'folder' | 'txt' | 'md';
 type DecoyDocDraft = { id: string; folderId: string | null; name: string; kind: 'txt' | 'md'; text: string };
@@ -59,12 +60,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [treeFolders, setTreeFolders] = useState<DbFolder[]>([]);
   const [treeNames, setTreeNames] = useState<Record<string, string>>({});
-  const [sidebarItems, setSidebarItems] = useState<Record<string, { id: string; kind: string; name: string; size?: number }[]>>({});
+  const [sidebarItems, setSidebarItems] = useState<Record<string, { id: string; kind: string; name: string; size?: number; mime?: string }[]>>({});
   const [folderSizes, setFolderSizes] = useState<Record<string, number>>({});
   const [foldersWithItems, setFoldersWithItems] = useState<Set<string>>(new Set());
   // Decoy view (wrong folder password)
   const [decoyMode, setDecoyMode] = useState<{ folderId: string; tree: DecoyTree; subId: string | null } | null>(null);
   const [decoySearchQuery, setDecoySearchQuery] = useState('');
+  const [decoyExpanded, setDecoyExpanded] = useState<Set<string>>(new Set());
+  useEffect(() => { setDecoyExpanded(new Set()); }, [decoyMode?.folderId]);
   // Inline editor (stays inside main layout: sidebar + header remain)
   const [editingId, setEditingId] = useState<string | null>(null);
   // Inline decoy editor (same: sidebar stays, doc opens as its own section)
@@ -79,7 +82,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   // Global search (all folders/files with accessible names)
   const [searchQuery, setSearchQuery] = useState('');
   const [searchBusy, setSearchBusy] = useState(false);
-  const [searchResults, setSearchResults] = useState<{ folders: { id: string; name: string; path: string; locked: boolean }[]; items: { id: string; name: string; kind: string; size?: number; parentId: string | null; path: string }[] } | null>(null);
+  const [searchResults, setSearchResults] = useState<{ folders: { id: string; name: string; path: string; locked: boolean }[]; items: { id: string; name: string; kind: string; size?: number; mime?: string; parentId: string | null; path: string }[] } | null>(null);
   const searchItemNames = useRef<Record<string, string>>({});
   // Create/upload can target a specific folder (3-dots "Create inside")
   const [createTargetParentId, setCreateTargetParentId] = useState<string | null | undefined>(undefined); // undefined = use current parentId
@@ -87,6 +90,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [uploadTargetId, setUploadTargetId] = useState<string | null>(null);
   // Inline unlock for locked folders (expand/collapse model, no navigation)
   const [inlineUnlockId, setInlineUnlockId] = useState<string | null>(null);
+  // File viewer (images, PDFs)
+  const [viewer, setViewer] = useState<{ id: string; name: string; mime: string; url: string; kind: 'image' | 'pdf' } | null>(null);
+  const [viewerBusy, setViewerBusy] = useState(false);
+  const [viewerErr, setViewerErr] = useState('');
+  const viewerUrlRef = useRef<string | null>(null);
+  useEffect(() => () => { if (viewerUrlRef.current) URL.revokeObjectURL(viewerUrlRef.current); }, []);
 
   function openMenuAt(id: string, e: React.MouseEvent) {
     const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
@@ -119,11 +128,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setDecoyEnabled(true); setDecoyName(''); setDecoyFolders([]); setDecoyDocs([]);
   }
 
-  function menuItems(id: string, kind: 'folder' | 'item', name: string, prot: string, itemKind?: string) {
+  function menuItems(id: string, kind: 'folder' | 'item', name: string, prot: string, itemKind?: string, mime?: string) {
     const canCreateInside = kind === 'folder' && (prot !== 'protected' || !!getFolderKey(id));
+    const viewKind = kind === 'item' ? (itemKind === 'txt' || itemKind === 'md' ? 'editor' : (itemKind === 'file' ? getViewKind(mime, name) : null)) : null;
     return (
       <>
-        {kind === 'item' && (itemKind === 'txt' || itemKind === 'md') && <button onClick={() => { setMenuId(null); openEditor(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> Open</button>}
+        {viewKind === 'editor' && <button onClick={() => { setMenuId(null); openEditor(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> Open</button>}
+        {(viewKind === 'image' || viewKind === 'pdf') && <button onClick={() => { setMenuId(null); void openFileViewer(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> View</button>}
         {canCreateInside && (
           <>
             <button onClick={() => { setMenuId(null); setCreateTargetParentId(id); setCreateKind('folder'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Folder size={12} /> New subfolder</button>
@@ -156,11 +167,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     const listKey = folderId === 'root' || folderId === null ? 'root' : folderId;
     try {
       const its = await listItems(key);
-      const list: { id: string; kind: string; name: string; size?: number }[] = [];
+      const list: { id: string; kind: string; name: string; size?: number; mime?: string }[] = [];
       for (const it of its) {
         try {
           const meta = await getItemMeta(it);
-          list.push({ id: it.id, kind: it.kind, name: meta.name, size: it.size });
+          list.push({ id: it.id, kind: it.kind, name: meta.name, size: it.size, mime: meta.mime || it.mime });
         } catch {
           // skip items we can't decrypt (locked)
         }
@@ -323,6 +334,47 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     return true;
   }
 
+  function getViewKind(mime?: string, name?: string): 'image' | 'pdf' | null {
+    const m = (mime || '').toLowerCase();
+    if (m.startsWith('image/')) return 'image';
+    if (m === 'application/pdf') return 'pdf';
+    const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+    if (ext === 'pdf') return 'pdf';
+    if (['png','jpg','jpeg','gif','webp','bmp','svg','avif','ico'].includes(ext)) return 'image';
+    return null;
+  }
+
+  function closeViewer() {
+    if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
+    setViewer(null);
+    setViewerErr('');
+    setViewerBusy(false);
+  }
+
+  async function openFileViewer(id: string) {
+    setSearchQuery('');
+    setSearchResults(null);
+    setViewerErr('');
+    setViewerBusy(true);
+    if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
+    try {
+      let it = items.find(x => x.id === id) || null;
+      if (!it) it = (await db.items.get(id)) || null;
+      if (!it) throw new Error('File not found');
+      const { bytes, mime, name } = await readFileItem(it);
+      const kind = getViewKind(mime, name);
+      if (!kind) throw new Error('This file type cannot be previewed');
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
+      viewerUrlRef.current = url;
+      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind });
+    } catch (e: any) {
+      setViewerErr(e?.message || 'Could not open file');
+      setViewer({ id, name: 'File', mime: '', url: '', kind: 'image' });
+    } finally {
+      setViewerBusy(false);
+    }
+  }
+
   function openEditor(id: string) {
     setSearchQuery('');
     setSearchResults(null);
@@ -370,6 +422,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       setInlineUnlockId(cur => (cur === id ? null : cur));
       setLockedId(cur => (cur === id ? null : cur));
       setUnlockPw('');
+      setExpandedFolders(s => { const n = new Set(s); n.delete(id); return n; });
+      setSidebarItems(s => { const n = { ...s }; delete n[id]; return n; });
       return;
     }
     setUnlockErr('Incorrect password.');
@@ -689,7 +743,10 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     style={{ paddingLeft: `${0.25 + (depth + 1) * 0.75 + 1.0}rem` }}
                   >
                     <button
-                      onClick={() => { if (it.kind === 'txt' || it.kind === 'md') openEditor(it.id); }}
+                      onClick={() => {
+                        if (it.kind === 'txt' || it.kind === 'md') openEditor(it.id);
+                        else if (it.kind === 'file' && getViewKind(it.mime, it.name)) void openFileViewer(it.id);
+                      }}
                       className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
                       title={it.name}
                     >
@@ -712,9 +769,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     });
   }
 
-  // Decoy view lists
-  const decoySubFolders = decoyMode ? decoyMode.tree.folders.filter(f => f.parentId === decoyMode.subId) : [];
-  const decoyDocsHere = decoyMode ? decoyMode.tree.docs.filter(d => d.folderId === decoyMode.subId) : [];
+  // Decoy view (expand/collapse, no drill-down; contents collapsed by default)
+  const decoyHasRootContent = decoyMode ? (decoyMode.tree.folders.some(f => f.parentId === null) || decoyMode.tree.docs.some(d => d.folderId === null)) : false;
 
   const selectableTop = decoyMode ? [] : [
     ...(treeChildren.get(parentId) ?? []).map(f => ({ id: f.id, type: 'folder' as const })),
@@ -818,14 +874,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           .filter(f => f.name.toLowerCase().includes(q))
           .slice(0, 60);
         const allItems = await db.items.toArray();
-        const itemHits: { id: string; name: string; kind: string; size?: number; parentId: string | null; path: string }[] = [];
+        const itemHits: { id: string; name: string; kind: string; size?: number; mime?: string; parentId: string | null; path: string }[] = [];
         for (const it of allItems) {
           let nm = searchItemNames.current[it.id];
           if (!nm) {
             try { nm = (await getItemMeta(it)).name; searchItemNames.current[it.id] = nm; } catch { continue; }
           }
           if (!nm.toLowerCase().includes(q)) continue;
-          itemHits.push({ id: it.id, name: nm, kind: it.kind, size: it.size, parentId: it.parentId, path: pathStringForFolder(it.parentId) });
+          itemHits.push({ id: it.id, name: nm, kind: it.kind, size: it.size, mime: it.mime, parentId: it.parentId, path: pathStringForFolder(it.parentId) });
           if (itemHits.length >= 80) break;
         }
         if (!cancelled) setSearchResults({ folders: folderHits, items: itemHits });
@@ -843,8 +899,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     await openFolder(f);
   }
 
-  async function goToSearchItem(hit: { id: string; name: string; kind: string; size?: number; parentId: string | null }) {
+  async function goToSearchItem(hit: { id: string; name: string; kind: string; size?: number; mime?: string; parentId: string | null }) {
     if (hit.kind !== 'txt' && hit.kind !== 'md') {
+      if (hit.kind === 'file' && getViewKind(hit.mime, hit.name)) {
+        setSearchQuery(''); setSearchResults(null);
+        await openFileViewer(hit.id);
+        return;
+      }
       // Navigate to its parent folder for non-editor files
       if (hit.parentId) { const pf = treeFolders.find(x => x.id === hit.parentId); if (pf) { setSearchQuery(''); setSearchResults(null); await openFolder(pf); } }
       else { setSearchQuery(''); setSearchResults(null); leaveCurrentFolder(); setLockedId(null); setParentId(null); setCrumbs([{ id: null, name: 'All' }]); }
@@ -980,6 +1041,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               <FileText size={15} className="text-zinc-500 shrink-0" />
                               <span className="truncate">{it.name}</span>
                             </button>
+                          ) : it.kind === 'file' && getViewKind(it.mime, it.name) ? (
+                            <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                              <File size={15} className="text-zinc-500 shrink-0" />
+                              <span className="truncate">{it.name}</span>
+                            </button>
                           ) : (
                             <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
                               <File size={15} className="text-zinc-500 shrink-0" />
@@ -1011,6 +1077,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   return (
     <div className="h-full flex bg-[#fafafa]">
+      {navOpen && <button aria-hidden tabIndex={-1} onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/20 md:hidden cursor-default" />}
       <aside className={`${navOpen ? 'flex' : 'hidden'} md:flex absolute md:static z-20 h-full w-52 shrink-0 flex-col border-r border-zinc-200 bg-white`}>
         <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-100">
           <div className="flex h-6 w-6 items-center justify-center bg-zinc-900 text-white text-xs rounded">V</div>
@@ -1168,19 +1235,91 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 const dDocHits = dq ? decoyMode.tree.docs.filter(d => d.name.toLowerCase().includes(dq)).map(d => ({ id: d.id, name: d.name, kind: d.kind, path: decoyFolderPath(d.folderId) })) : [];
                 const openDecoyFolderById = (folderId: string) => {
                   setDecoySearchQuery('');
-                  const chain: typeof decoyMode.tree.folders = [];
+                  const chain: string[] = [folderId];
                   let cur = decoyMode.tree.folders.find(f => f.id === folderId);
-                  while (cur) { chain.unshift(cur); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
-                  const crumbsNext: { id: string | null; name: string }[] = [{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }];
-                  for (const c of chain) crumbsNext.push({ id: null, name: c.name });
-                  setCrumbs(crumbsNext);
-                  setDecoyMode(m => m ? { ...m, subId: folderId } : m);
+                  while (cur?.parentId) { chain.unshift(cur.parentId); cur = decoyMode.tree.folders.find(f => f.id === cur!.parentId); }
+                  setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
+                  setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }]);
+                  setDecoyMode(m => m ? { ...m, subId: null } : m);
                 };
                 const openDecoyDocHit = (docId: string, folderId: string | null) => {
                   setDecoySearchQuery('');
-                  if (folderId) openDecoyFolderById(folderId);
-                  else { setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }]); setDecoyMode(m => m ? { ...m, subId: null } : m); }
+                  if (folderId) {
+                    const chain: string[] = [];
+                    let cur = decoyMode.tree.folders.find(f => f.id === folderId);
+                    while (cur) { chain.unshift(cur.id); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
+                    setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
+                  }
+                  setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }]);
+                  setDecoyMode(m => m ? { ...m, subId: null } : m);
                   openDecoyDoc(docId);
+                };
+                const toggleDecoyExpand = (id: string) => setDecoyExpanded(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+                const renderDecoyRows = (pid: string | null, depth: number): React.ReactNode[] => {
+                  const folders = decoyMode.tree.folders.filter(f => f.parentId === pid);
+                  const docs = decoyMode.tree.docs.filter(d => d.folderId === pid);
+                  const rows: React.ReactNode[] = [];
+                  for (const f of folders) {
+                    const expanded = decoyExpanded.has(f.id);
+                    const hasChildren = decoyMode.tree.folders.some(x => x.parentId === f.id) || decoyMode.tree.docs.some(x => x.folderId === f.id);
+                    rows.push(
+                      <tr key={f.id} className="border-b border-zinc-100 hover:bg-zinc-50">
+                        <td className="px-3 py-1">
+                          <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+                            <button
+                              type="button"
+                              onClick={() => toggleDecoyExpand(f.id)}
+                              aria-label={expanded ? `Collapse ${f.name}` : `Expand ${f.name}`}
+                              aria-expanded={expanded}
+                              className={`p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${hasChildren ? '' : 'invisible'}`}
+                              tabIndex={hasChildren ? 0 : -1}
+                            >
+                              <ChevronRight size={14} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleDecoyExpand(f.id)}
+                              title={hasChildren ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder'}
+                              className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
+                            >
+                              <Folder size={15} className="text-zinc-500 shrink-0" />
+                              <span className="truncate">{f.name}</span>
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
+                        <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+                        <td className="px-3 py-1">
+                          <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, folders: decoyMode.tree.folders.filter(x => x.id !== f.id), docs: decoyMode.tree.docs.filter(x => x.folderId !== f.id) }); setDecoyExpanded(s => { const n = new Set(s); n.delete(f.id); return n; }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
+                        </td>
+                      </tr>
+                    );
+                    if (expanded) {
+                      if (hasChildren) rows.push(...renderDecoyRows(f.id, depth + 1));
+                      else rows.push(<tr key={`${f.id}-empty`} className="border-b border-zinc-100 bg-zinc-50/30"><td colSpan={4} className="px-3 py-2"><div style={{ paddingLeft: (depth + 1) * 16 + 24 }} className="text-xs text-zinc-500">This folder is empty.</div></td></tr>);
+                    }
+                  }
+                  for (const d of docs) {
+                    rows.push(
+                      <tr key={d.id} className="border-b border-zinc-100 hover:bg-zinc-50">
+                        <td className="px-3 py-1">
+                          <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+                            <span className="shrink-0 w-5 h-5" aria-hidden />
+                            <button onClick={() => { setDecoySearchQuery(''); openDecoyDoc(d.id); }} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                              <FileText size={15} className="text-zinc-500 shrink-0" />
+                              <span className="truncate">{d.name}</span>
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
+                        <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+                        <td className="px-3 py-1">
+                          <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, docs: decoyMode.tree.docs.filter(x => x.id !== d.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return rows;
                 };
                 return (
                   <>
@@ -1277,46 +1416,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">—</td>
                             <td className="px-3 py-1"></td>
                           </tr>
-                          {decoySubFolders.map(f => (
-                            <tr key={f.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                              <td className="px-3 py-1">
-                                <div className="flex items-center gap-1">
-                                  <span className="shrink-0 w-5 h-5" aria-hidden />
-                                  <button
-                                    onClick={() => { setDecoySearchQuery(''); setDecoyMode(m => m ? { ...m, subId: f.id } : m); setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }, { id: null, name: f.name }]); }}
-                                    className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
-                                  >
-                                    <Folder size={15} className="text-zinc-500 shrink-0" />
-                                    <span className="truncate">{f.name}</span>
-                                  </button>
-                                </div>
-                              </td>
-                              <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
-                              <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                              <td className="px-3 py-1">
-                                <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, folders: decoyMode.tree.folders.filter(x => x.id !== f.id), docs: decoyMode.tree.docs.filter(x => x.folderId !== f.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
-                              </td>
-                            </tr>
-                          ))}
-                          {decoyDocsHere.map(d => (
-                            <tr key={d.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                              <td className="px-3 py-1">
-                                <div className="flex items-center gap-1">
-                                  <span className="shrink-0 w-5 h-5" aria-hidden />
-                                  <button onClick={() => { setDecoySearchQuery(''); openDecoyDoc(d.id); }} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                    <FileText size={15} className="text-zinc-500 shrink-0" />
-                                    <span className="truncate">{d.name}</span>
-                                  </button>
-                                </div>
-                              </td>
-                              <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
-                              <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                              <td className="px-3 py-1">
-                                <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, docs: decoyMode.tree.docs.filter(x => x.id !== d.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
-                              </td>
-                            </tr>
-                          ))}
-                          {decoySubFolders.length === 0 && decoyDocsHere.length === 0 && (
+                          {renderDecoyRows(null, 0)}
+                          {!decoyHasRootContent && (
                             <tr><td colSpan={4} className="px-3 py-10 text-center text-sm text-zinc-500">This folder is empty. Create or upload to get started.</td></tr>
                           )}
                         </tbody>
@@ -1339,8 +1440,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                           <>
                             <button aria-hidden tabIndex={-1} onClick={closePlusMenu} className="fixed inset-0 z-30 cursor-default" />
                             <div className="fixed z-40 w-48 border border-zinc-200 bg-white rounded-md shadow-lg py-1 max-h-[calc(100vh-16px)] overflow-auto" role="menu" style={{ top: plusMenuPos.top, bottom: plusMenuPos.bottom, left: plusMenuPos.left }}>
-                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, folders: [...decoyMode.tree.folders, { id: newDecoyId(), parentId: decoyMode.subId, name: 'New folder' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
-                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, docs: [...decoyMode.tree.docs, { id: newDecoyId(), folderId: decoyMode.subId, name: 'New document.txt', kind: 'txt', text: '' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New document</button>
+                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, folders: [...decoyMode.tree.folders, { id: newDecoyId(), parentId: null, name: 'New folder' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
+                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, docs: [...decoyMode.tree.docs, { id: newDecoyId(), folderId: null, name: 'New document.txt', kind: 'txt', text: '' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New document</button>
                             </div>
                           </>
                         )}
@@ -1522,6 +1623,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                                   <FileText size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
+                              ) : it.kind === 'file' && getViewKind(it.mime, names[it.id]) ? (
+                                <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <span className="truncate">{names[it.id]}</span>
+                                </button>
                               ) : (
                                 <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
                                   <File size={15} className="text-zinc-500 shrink-0" />
@@ -1600,7 +1706,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         if (mi) {
           return (
             <RowMenu open onClose={() => setMenuId(null)}>
-              {menuItems(mi.id, 'item', names[mi.id] || 'item', 'unprotected', mi.kind)}
+              {menuItems(mi.id, 'item', names[mi.id] || 'item', 'unprotected', mi.kind, mi.mime)}
             </RowMenu>
           );
         }
@@ -1608,7 +1714,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         if (cached) {
           return (
             <RowMenu open onClose={() => setMenuId(null)}>
-              {menuItems(cached.id, 'item', cached.name, 'unprotected', cached.kind)}
+              {menuItems(cached.id, 'item', cached.name, 'unprotected', cached.kind, cached.mime)}
             </RowMenu>
           );
         }
@@ -1630,7 +1736,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </div>
       </Dialog>
 
-      <Dialog open={showSettings} onClose={() => setShowSettings(false)} title="Settings">
+      <Dialog open={showSettings} onClose={() => setShowSettings(false)} title={`Settings  ${APP_VERSION_LABEL}`}>
         <div className="space-y-1.5">
           <button onClick={() => setSettingsTab('master')} className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm rounded border border-zinc-200 hover:bg-zinc-50 text-left">
             <Lock size={15} className="text-zinc-500" /> Master password
@@ -1844,6 +1950,33 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </div>
       </Dialog>
 
+      <Dialog open={!!viewer || viewerBusy} onClose={closeViewer} title={viewer?.name || (viewerBusy ? 'Opening file…' : 'File viewer')} width="min(96vw, 56rem)">
+        {viewerBusy ? (
+          <div className="py-12 text-center text-sm text-zinc-500">Decrypting and opening…</div>
+        ) : viewerErr ? (
+          <div className="space-y-3">
+            <p className="text-sm text-red-600">{viewerErr}</p>
+            <div className="flex justify-end"><button onClick={closeViewer} className="px-3 py-2 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Close</button></div>
+          </div>
+        ) : viewer ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+              <span className="truncate">{viewer.mime || viewer.kind.toUpperCase()}</span>
+              <div className="flex items-center gap-2 shrink-0">
+                {viewer.url && <a href={viewer.url} download={viewer.name} className="px-2 py-1 border border-zinc-300 rounded hover:bg-zinc-50 text-zinc-700">Download</a>}
+                <button onClick={closeViewer} className="px-2 py-1 border border-zinc-300 rounded hover:bg-zinc-50 text-zinc-700">Close</button>
+              </div>
+            </div>
+            <div className="rounded border border-zinc-200 bg-zinc-50 overflow-hidden min-h-[200px] max-h-[72vh] flex items-center justify-center">
+              {viewer.kind === 'image' ? (
+                <img src={viewer.url} alt={viewer.name} className="max-w-full max-h-[72vh] object-contain" />
+              ) : (
+                <iframe src={viewer.url} title={viewer.name} className="w-full h-[72vh] bg-white" />
+              )}
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
       <Dialog open={bulkDeleteOpen} onClose={() => setBulkDeleteOpen(false)} title="Delete selected">
         <div className="space-y-3">
           <p className="text-sm text-zinc-700">Delete <span className="font-medium">{selectedCount}</span> selected item{selectedCount === 1 ? '' : 's'}? Folder contents will also be deleted. This cannot be undone.</p>
