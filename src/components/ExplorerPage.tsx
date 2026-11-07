@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, EyeOff, Pencil, Search, X } from 'lucide-react';
+import { Folder, FileText, File, Lock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
