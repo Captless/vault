@@ -224,7 +224,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
                 className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none"
                 style={{ fontFamily: font, fontSize: size, tabSize: 2, background: 'var(--app-surface)', color: 'var(--app-text)' }}
                 spellCheck={false}
-                placeholder="Write… Use toolbar to format. Tab indents; bullets/numbers insert list markers. Links: [text](url)"
+                placeholder={kind === 'txt' ? 'Write anything...' : 'Write anything...'}
               />
             )}
             <div className="border-t border-zinc-100 bg-zinc-50 px-4 py-2 flex items-center justify-between text-[11px] text-zinc-500">
