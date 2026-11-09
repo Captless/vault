@@ -142,7 +142,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#fafafa] min-h-0">
+    <div className={`h-full flex flex-col min-h-0 ${showHeader ? 'min-h-[100dvh]' : ''}`} style={{ background: 'var(--app-bg)', color: 'var(--app-text)' }}>
       {showHeader && (
         <header className="flex items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2 shrink-0">
           <button onClick={() => { onClose(); }} className="p-1.5 rounded hover:bg-zinc-100 text-zinc-600" aria-label="Back to files">
@@ -213,8 +213,8 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
                 value={text}
                 onChange={e => onTextChange(e.target.value)}
                 onKeyDown={handleEditorKeyDown}
-                className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none bg-white"
-                style={{ fontFamily: font, fontSize: size, tabSize: 2 }}
+                className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none"
+                style={{ fontFamily: font, fontSize: size, tabSize: 2, background: 'var(--app-surface)', color: 'var(--app-text)' }}
                 spellCheck={false}
                 placeholder="Write… Use toolbar to format. Tab indents; bullets/numbers insert list markers. Links: [text](url)"
               />

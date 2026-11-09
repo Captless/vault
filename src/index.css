@@ -78,7 +78,8 @@ button, input, textarea, select, a { touch-action: manipulation; }
 .bg-zinc-900 { background-color: var(--app-primary) !important; color: var(--app-on-primary) !important; }
 .bg-zinc-900.text-white, .bg-zinc-900 .text-white, .bg-zinc-900 svg { color: var(--app-on-primary) !important; }
 .hover\:bg-zinc-800:hover { background-color: var(--app-primary-hover) !important; }
-.hover\:bg-zinc-50:hover, .hover\:bg-zinc-100:hover { background-color: var(--app-surface-2) !important; }
+.hover\:bg-zinc-50:hover, .hover\:bg-zinc-100:hover, .focus-within\:bg-zinc-50:focus-within { background-color: var(--app-surface-2) !important; }
+.hover\:bg-white:hover { background-color: var(--app-surface) !important; }
 .text-zinc-900, .text-zinc-800 { color: var(--app-text) !important; }
 .text-zinc-700, .text-zinc-600, .text-zinc-500 { color: var(--app-text-muted) !important; }
 .text-zinc-400 { color: var(--app-text-faint) !important; }
@@ -89,6 +90,11 @@ button, input, textarea, select, a { touch-action: manipulation; }
 .focus\:ring-zinc-900\/10:focus { --tw-ring-color: color-mix(in srgb, var(--app-accent) 18%, transparent) !important; }
 .bg-black\/20 { background-color: rgba(8, 12, 16, .38) !important; }
 .dark .bg-black\/20 { background-color: rgba(2, 6, 10, .62) !important; }
+/* Opacity variants (dark mode: avoid white highlights/blended rows) */
+[class*="bg-zinc-50/"] { background-color: color-mix(in srgb, var(--app-surface-2) 55%, transparent) !important; }
+[class*="bg-white/"] { background-color: color-mix(in srgb, var(--app-surface) 92%, transparent) !important; }
+.dark [class*="bg-white/"] { background-color: color-mix(in srgb, var(--app-surface) 94%, transparent) !important; color: var(--app-text) !important; }
+tr[class*="bg-zinc-50"], tr.hover\:bg-zinc-50:hover, .group:hover { color: inherit; }
 
 /* Semantic accents */
 .text-red-600 { color: var(--app-danger) !important; }
