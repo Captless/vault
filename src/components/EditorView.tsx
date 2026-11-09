@@ -15,7 +15,9 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 24, 28, 32];
 
 interface Props {
   name: string;
-  kind: 'txt' | 'md';
+  /** Preferred: editor behavior mode. `kind` kept for backward compatibility. */
+  mode?: 'markdown' | 'plain';
+  kind?: 'txt' | 'md';
   text: string;
   saving: boolean;
   savedAt: number | null;
@@ -29,11 +31,12 @@ interface Props {
 
 /** Shared document editor UI — used by real TXT/MD editor and decoy editor
  *  so both views always have identical design (toolbar, card, preview). */
-export default function EditorView({ name, kind, text, saving, savedAt, onTextChange, onSave, onClose, headerExtras, footerNote, showHeader = true }: Props) {
+export default function EditorView({ name, mode, kind = 'txt', text, saving, savedAt, onTextChange, onSave, onClose, headerExtras, footerNote, showHeader = true }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState(false);
   const [font, setFont] = useState(FONTS[0].value);
   const [size, setSize] = useState(14);
+  const isMarkdown = mode ? mode === 'markdown' : kind === 'md';
 
   function focusAndSelect(start: number, end: number) {
     requestAnimationFrame(() => {
@@ -74,7 +77,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
   }
 
   function toggleHeading() {
-    if (kind !== 'md') return;
+    if (!isMarkdown) return;
     const ta = taRef.current;
     if (!ta) return;
     const { selectionStart: start, selectionEnd: end, value } = ta;
@@ -96,7 +99,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
     const ta = taRef.current;
     if (!ta) return;
     const { selectionStart: start, selectionEnd: end, value } = ta;
-    const ulMarker = kind === 'md' ? '- ' : '• '; // txt gets actual bullet point; md uses markdown
+    const ulMarker = isMarkdown ? '- ' : '• ';
     const isUl = (l: string) => kind === 'md' ? /^[-*+]\s+/.test(l) : /^•\s+/.test(l);
     const isOl = (l: string) => /^\d+\.\s+/.test(l);
     const strip = (l: string) => l.replace(/^[-*+•]\s+/, '').replace(/^\d+\.\s+/, '');
@@ -159,7 +162,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
           <span className="text-xs text-zinc-400">{saving ? 'Saving…' : savedAt ? 'Saved' : ''}</span>
           <button onClick={onSave} className="text-xs border border-zinc-300 bg-white px-2.5 py-1.5 rounded hover:bg-zinc-50">Save</button>
           <div className="ml-auto flex items-center gap-1.5">
-            {kind === 'md' && (
+            {isMarkdown && (
               <button onClick={() => setPreview(p => !p)} className="flex items-center gap-1.5 border border-zinc-300 bg-white px-2.5 py-1.5 text-xs rounded hover:bg-zinc-50">
                 {preview ? <EyeOff size={13} /> : <Eye size={13} />} {preview ? 'Edit' : 'Preview'}
               </button>
@@ -180,16 +183,16 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
               {FONT_SIZES.map(s => <option key={s} value={s}>{s}px</option>)}
             </select>
             <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'md' && wrap('**', '**')} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Bold (**text**)' : 'Bold (Markdown only)'}>B</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'md' && wrap('_', '_')} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 italic focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Italic (_text_)' : 'Italic (Markdown only)'}>I</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'md' && wrap('<u>', '</u>')} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Underline' : 'Underline (Markdown only)'}>U</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={toggleHeading} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Heading' : 'Heading (Markdown only)'}>H</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => isMarkdown && wrap('**', '**')} disabled={!isMarkdown} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={isMarkdown ? 'Bold (**text**)' : 'Bold (Markdown mode only)'}>B</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => isMarkdown && wrap('_', '_')} disabled={!isMarkdown} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 italic focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={isMarkdown ? 'Italic (_text_)' : 'Italic (Markdown mode only)'}>I</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => isMarkdown && wrap('<u>', '</u>')} disabled={!isMarkdown} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={isMarkdown ? 'Underline (<u>)' : 'Underline (Markdown mode only)'}>U</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={toggleHeading} disabled={!isMarkdown} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={isMarkdown ? 'Heading (##)' : 'Heading (Markdown mode only)'}>H</button>
             <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
             <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ul')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Bullet list">• List</button>
             <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ol')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Numbered list">1. List</button>
             <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
-            <button type="button" onMouseDown={e => e.preventDefault()} disabled={kind !== 'md'} onClick={() => {
-              if (kind !== 'md') return;
+            <button type="button" onMouseDown={e => e.preventDefault()} disabled={!isMarkdown} onClick={() => {
+              if (!isMarkdown) return;
               const ta = taRef.current; if (!ta) return;
               const { selectionStart: s, selectionEnd: end, value } = ta;
               const sel = value.slice(s, end);
@@ -200,12 +203,12 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
                 const next = value.slice(0, s) + '[text](url)' + value.slice(end);
                 applyEdit(next, s + 1, s + 5);
               }
-            }} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Insert link' : 'Link (Markdown only)'}>Link</button>
-            <span className="ml-auto text-[11px] text-zinc-400">{kind === 'txt' ? 'Plain text — lists & Tab indent available' : `${text.split(/\s+/).filter(Boolean).length} words`}</span>
+            }} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={isMarkdown ? 'Insert link' : 'Link (Markdown mode only)'}>Link</button>
+            <span className="ml-auto text-[11px] text-zinc-400">{isMarkdown ? ` words` : `Source editor ·  chars`}</span>
           </div>
 
           <div className="bg-white border border-zinc-200 rounded-b-lg shadow-sm overflow-hidden flex flex-col min-h-0 flex-1">
-            {preview && kind === 'md' ? (
+            {preview && isMarkdown ? (
               <div className="prose prose-sm max-w-none p-6 flex-1 overflow-auto" style={{ fontFamily: font, fontSize: size, color: 'var(--app-text)' }}>
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
@@ -224,11 +227,11 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
                 className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none"
                 style={{ fontFamily: font, fontSize: size, tabSize: 2, background: 'var(--app-surface)', color: 'var(--app-text)' }}
                 spellCheck={false}
-                placeholder={kind === 'txt' ? 'Write anything...' : 'Write anything...'}
+                placeholder={isMarkdown ? 'Write markdown...' : 'Write anything...'}
               />
             )}
             <div className="border-t border-zinc-100 bg-zinc-50 px-4 py-2 flex items-center justify-between text-[11px] text-zinc-500">
-              <span>{kind.toUpperCase()}</span>
+              <span>{isMarkdown ? 'MD' : ((name.split('.').pop() || 'TEXT').toUpperCase().slice(0, 8))}</span>
               <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-green-500" /> {footerNote ?? 'Autossaved locally'}</span>
             </div>
           </div>

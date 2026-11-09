@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../db/database';
-import { readText, writeText, getItemMeta } from '../services/item.service';
+import { readText, writeText, getItemMeta, getTextEditorMode } from '../services/item.service';
 import EditorView from './EditorView';
 
 export default function EditorPage({ itemId, onClose }: { itemId?: string; onClose?: () => void } = {}) {
@@ -74,13 +74,15 @@ export default function EditorPage({ itemId, onClose }: { itemId?: string; onClo
     };
   }, [flushSave]);
 
-  if (!item) return <div className="h-full flex items-center justify-center text-zinc-500 text-sm">Loading…</div>;
+  if (!item) return <div className="h-full flex items-center justify-center text-zinc-500 text-sm">Loading...</div>;
 
+  const mode = getTextEditorMode(name, item.mime, item.kind) ?? 'plain';
   return (
     <>
       <EditorView
         name={name}
-        kind={item.kind === 'md' ? 'md' : (item.kind === 'txt' ? 'txt' : (/\.md$/i.test(name) ? 'md' : 'txt'))}
+        mode={mode}
+        kind={mode === 'markdown' ? 'md' : 'txt'}
         text={text}
         saving={saving}
         savedAt={savedAt}
