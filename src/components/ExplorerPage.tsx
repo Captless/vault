@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X } from 'lucide-react';
+import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, Sun, Moon } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -14,6 +14,7 @@ import EditorPage from './EditorPage';
 import DecoyEditorInline from './DecoyEditorInline';
 import type { DbFolder, DbItem, DecoyTree } from '../types';
 import { APP_VERSION_LABEL } from '../app/version';
+import { getTheme, toggleTheme, type ThemeMode } from '../app/theme';
 
 type CreateKind = 'folder' | 'txt' | 'md';
 type DecoyDocDraft = { id: string; folderId: string | null; name: string; kind: 'txt' | 'md'; text: string };
@@ -105,6 +106,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const viewerDragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const viewerMovedRef = useRef(false);
   const viewerLastTapRef = useRef(0);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getTheme());
   useEffect(() => () => { if (viewerUrlRef.current) URL.revokeObjectURL(viewerUrlRef.current); }, []);
 
   function openMenuAt(id: string, e: React.MouseEvent) {
@@ -1472,6 +1474,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
         <div className="p-2 border-t border-zinc-100 space-y-2">
           {storage && <p className="flex items-center gap-1.5 px-2 text-xs text-zinc-500"><HardDrive size={12} />{storage}</p>}
+          <button onClick={() => setThemeMode(toggleTheme())} className="w-full flex items-center gap-2 px-2.5 py-1.5 text-sm rounded hover:bg-zinc-100 text-zinc-700" aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+            {themeMode === 'dark' ? <Sun size={14} /> : <Moon size={14} />} {themeMode === 'dark' ? 'Light mode' : 'Dark mode'}
+          </button>
           <button onClick={() => { setSettingsTab('menu'); setShowSettings(true); }} className="w-full flex items-center gap-2 px-2.5 py-1.5 text-sm rounded hover:bg-zinc-100 text-zinc-700">
             <Settings size={14} /> Settings
           </button>
@@ -1487,6 +1492,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
           <span className="text-sm font-medium text-zinc-700 truncate">All</span>
+          <button type="button" onClick={() => setThemeMode(toggleTheme())} className="ml-auto p-1.5 rounded text-zinc-600 hover:bg-zinc-100" aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+            {themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
         </header>
 
         <div className="flex-1 overflow-auto min-h-0 flex flex-col pb-20">
