@@ -11,17 +11,6 @@ const FONTS = [
   { label: 'Mono', value: '"JetBrains Mono", ui-monospace, "Cascadia Mono", monospace' },
 ];
 
-const COLORS = [
-  { label: 'Default', value: '#18181b' },
-  { label: 'Muted', value: '#52525b' },
-  { label: 'Red', value: '#dc2626' },
-  { label: 'Orange', value: '#ea580c' },
-  { label: 'Amber', value: '#ca8a04' },
-  { label: 'Green', value: '#16a34a' },
-  { label: 'Blue', value: '#2563eb' },
-  { label: 'Purple', value: '#7c3aed' },
-];
-
 const FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 24, 28, 32];
 
 interface Props {
@@ -45,7 +34,6 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
   const [preview, setPreview] = useState(false);
   const [font, setFont] = useState(FONTS[0].value);
   const [size, setSize] = useState(14);
-  const [color, setColor] = useState('#18181b');
 
   function focusAndSelect(start: number, end: number) {
     requestAnimationFrame(() => {
@@ -86,6 +74,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
   }
 
   function toggleHeading() {
+    if (kind !== 'md') return;
     const ta = taRef.current;
     if (!ta) return;
     const { selectionStart: start, selectionEnd: end, value } = ta;
@@ -94,33 +83,39 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
     const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
     const block = value.slice(lineStart, lineEnd);
     const lines = block.split('\n');
-    const allHeaded = lines.every(l => /^##\s/.test(l));
-    const nextBlock = lines.map(l => allHeaded ? l.replace(/^##\s?/, '') : (l ? `## ${l.replace(/^#+\s*/, '')}` : '## ')).join('\n');
+    const allHeaded = lines.every(l => /^##\s/.test(l) || !l.trim());
+    const nextBlock = lines.map(l => {
+      if (!l.trim() && !allHeaded) return '## ';
+      return allHeaded ? l.replace(/^##\s?/, '') : `## ${l.replace(/^#+\s*/, '')}`;
+    }).join('\n');
     const next = value.slice(0, lineStart) + nextBlock + value.slice(lineEnd);
     applyEdit(next, lineStart, lineStart + nextBlock.length);
   }
 
-  function insertList(kind: 'ul' | 'ol') {
+  function insertList(listKind: 'ul' | 'ol') {
     const ta = taRef.current;
     if (!ta) return;
     const { selectionStart: start, selectionEnd: end, value } = ta;
-    const marker = kind === 'ul' ? '- ' : '1. ';
-    if (start === end) {
-      // Insert marker only (no placeholder text) — Word-like: just bullet/number + space
-      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-      const atLineStart = start === lineStart;
-      const snippet = atLineStart ? marker : `\n${marker}`;
-      insertAtCursor(snippet);
-      return;
-    }
-    const block = value.slice(start, end);
-    const lines = block.split('\n').map((l, i) => {
-      const clean = l.replace(/^[-•*]\s+/, '').replace(/^\d+\.\s+/, '').replace(/^\s+/, (m) => m); // preserve indent
-      return kind === 'ul' ? `- ${clean}` : `${i + 1}. ${clean}`;
-    });
-    const nextBlock = lines.join('\n');
-    const next = value.slice(0, start) + nextBlock + value.slice(end);
-    applyEdit(next, start, start + nextBlock.length);
+    const ulMarker = kind === 'md' ? '- ' : '• '; // txt gets actual bullet point; md uses markdown
+    const isUl = (l: string) => kind === 'md' ? /^[-*+]\s+/.test(l) : /^•\s+/.test(l);
+    const isOl = (l: string) => /^\d+\.\s+/.test(l);
+    const strip = (l: string) => l.replace(/^[-*+•]\s+/, '').replace(/^\d+\.\s+/, '');
+
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const lineEndIdx = value.indexOf('\n', end > start ? end - 1 : end);
+    const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
+    const block = value.slice(lineStart, lineEnd);
+    const lines = block.split('\n');
+    const allList = lines.every(l => !l.trim() || (listKind === 'ul' ? isUl(l) : isOl(l)));
+    const nextBlock = lines.map((l, i) => {
+      if (!l.trim()) return listKind === 'ul' ? ulMarker : `${i + 1}. `;
+      if (allList) return strip(l); // toggle off
+      const clean = strip(l);
+      return listKind === 'ul' ? `${ulMarker}${clean}` : `${i + 1}. ${clean}`;
+    }).join('\n');
+    const next = value.slice(0, lineStart) + nextBlock + value.slice(lineEnd);
+    const caret = lineStart + (listKind === 'ul' ? ulMarker.length : 3);
+    applyEdit(next, caret, caret);
   }
 
   function handleEditorKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -154,7 +149,7 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#fafafa] min-h-0">
+    <div className={`h-full flex flex-col min-h-0 ${showHeader ? 'min-h-[100dvh]' : ''}`} style={{ background: 'var(--app-bg)', color: 'var(--app-text)' }}>
       {showHeader && (
         <header className="flex items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2 shrink-0">
           <button onClick={() => { onClose(); }} className="p-1.5 rounded hover:bg-zinc-100 text-zinc-600" aria-label="Back to files">
@@ -185,36 +180,40 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
               {FONT_SIZES.map(s => <option key={s} value={s}>{s}px</option>)}
             </select>
             <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => wrap('**', '**')} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Bold (Markdown: **text**)">B</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => wrap('*', '*')} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 italic focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Italic (Markdown: *text*)">I</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => wrap(kind === 'md' ? '<u>' : '', kind === 'md' ? '</u>' : '')} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title={kind === 'md' ? 'Underline (HTML in Markdown)' : 'Underline (visual only in plain text)'} disabled={kind !== 'md'}>U</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={toggleHeading} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Heading">H</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'md' && wrap('**', '**')} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Bold (**text**)' : 'Bold (Markdown only)'}>B</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'md' && wrap('_', '_')} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 italic focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Italic (_text_)' : 'Italic (Markdown only)'}>I</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'md' && wrap('<u>', '</u>')} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Underline' : 'Underline (Markdown only)'}>U</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={toggleHeading} disabled={kind !== 'md'} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Heading' : 'Heading (Markdown only)'}>H</button>
             <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ul')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Bulleted list (inserts marker; Tab to indent)">• List</button>
-            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ol')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Numbered list (inserts marker; Tab to indent)">1. List</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ul')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Bullet list">• List</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ol')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Numbered list">1. List</button>
             <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
-            <div className="flex items-center gap-1" role="group" aria-label="Text color">
-              {COLORS.map(c => (
-                <button
-                  key={c.value}
-                  type="button"
-                  onMouseDown={e => e.preventDefault()}
-                  onClick={() => setColor(c.value)}
-                  className={`h-5 w-5 rounded-full border ${color === c.value ? 'border-zinc-900 ring-1 ring-zinc-900 ring-offset-1' : 'border-zinc-300 hover:border-zinc-400'} focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500`}
-                  style={{ backgroundColor: c.value }}
-                  aria-label={c.label}
-                  aria-pressed={color === c.value}
-                  title={c.label}
-                />
-              ))}
-            </div>
-            <span className="ml-auto text-[11px] text-zinc-400">{text.split(/\s+/).filter(Boolean).length} words</span>
+            <button type="button" onMouseDown={e => e.preventDefault()} disabled={kind !== 'md'} onClick={() => {
+              if (kind !== 'md') return;
+              const ta = taRef.current; if (!ta) return;
+              const { selectionStart: s, selectionEnd: end, value } = ta;
+              const sel = value.slice(s, end);
+              if (sel) {
+                const next = value.slice(0, s) + `[${sel}](url)` + value.slice(end);
+                applyEdit(next, s + sel.length + 3, s + sel.length + 6);
+              } else {
+                const next = value.slice(0, s) + '[text](url)' + value.slice(end);
+                applyEdit(next, s + 1, s + 5);
+              }
+            }} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed" title={kind === 'md' ? 'Insert link' : 'Link (Markdown only)'}>Link</button>
+            <span className="ml-auto text-[11px] text-zinc-400">{kind === 'txt' ? 'Plain text — lists & Tab indent available' : `${text.split(/\s+/).filter(Boolean).length} words`}</span>
           </div>
 
           <div className="bg-white border border-zinc-200 rounded-b-lg shadow-sm overflow-hidden flex flex-col min-h-0 flex-1">
             {preview && kind === 'md' ? (
-              <div className="prose prose-sm max-w-none p-6 flex-1 overflow-auto" style={{ fontFamily: font, fontSize: size, color }}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{text}</ReactMarkdown>
+              <div className="prose prose-sm max-w-none p-6 flex-1 overflow-auto" style={{ fontFamily: font, fontSize: size, color: 'var(--app-text)' }}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeSanitize]}
+                  components={{
+                    a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" className="underline text-[var(--app-accent)] hover:opacity-80" />,
+                  }}
+                >{text}</ReactMarkdown>
               </div>
             ) : (
               <textarea
@@ -222,10 +221,10 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
                 value={text}
                 onChange={e => onTextChange(e.target.value)}
                 onKeyDown={handleEditorKeyDown}
-                className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none bg-white"
-                style={{ fontFamily: font, fontSize: size, color, tabSize: 2 }}
+                className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none"
+                style={{ fontFamily: font, fontSize: size, tabSize: 2, background: 'var(--app-surface)', color: 'var(--app-text)' }}
                 spellCheck={false}
-                placeholder="Write… Use toolbar to format. Tab indents; bullets/numbers insert list markers."
+                placeholder={kind === 'txt' ? 'Write anything...' : 'Write anything...'}
               />
             )}
             <div className="border-t border-zinc-100 bg-zinc-50 px-4 py-2 flex items-center justify-between text-[11px] text-zinc-500">
