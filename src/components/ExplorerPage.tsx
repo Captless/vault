@@ -37,7 +37,6 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'menu' | 'master' | 'backup'>('menu');
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'folder' | 'item'; id: string; name: string; decoy?: { rootId: string; rawId: string } } | null>(null);
-  const [navOpen, setNavOpen] = useState(false);
   const [folderActionsOpen, setFolderActionsOpen] = useState(false);
   const [plusMenuPos, setPlusMenuPos] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
   const [crumbs, setCrumbs] = useState<{ id: string | null; name: string }[]>([{ id: null, name: 'All' }]);
@@ -1346,13 +1345,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           </tr>
           {inlineUnlockId === f.id && (
             <tr className="border-b border-zinc-100 bg-zinc-50/40">
-              <td colSpan={4} className="px-3 py-3">
-                <div style={{ paddingLeft: (depth + 1) * 16 }}>
-                  <form onSubmit={(e) => { e.preventDefault(); void doUnlock(f.id); }} className="max-w-sm space-y-2">
-                    <p className="text-xs text-zinc-600 flex items-center gap-1.5"><Lock size={12} /> Enter password for <span className="font-medium text-zinc-800">{fname}</span></p>
-                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Folder password" autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} className="w-full border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
+              <td colSpan={4} className="p-0">
+                <div className="px-3 py-3 min-w-0" style={{ paddingLeft: Math.min((depth + 1) * 16 + 12, 28) }}>
+                  <form onSubmit={(e) => { e.preventDefault(); void doUnlock(f.id); }} className="w-full max-w-sm space-y-2 min-w-0">
+                    <p className="text-xs text-zinc-600 flex items-start gap-1.5 min-w-0"><Lock size={12} className="shrink-0 mt-0.5" /> <span className="min-w-0 break-words">Password for <span className="font-medium text-zinc-800">{fname}</span></span></p>
+                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Password" autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} className="w-full min-w-0 border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
                     {unlockErr && <p className="text-xs text-red-600" role="alert">{unlockErr}</p>}
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button type="submit" disabled={busy} className="px-3 py-1.5 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
                       <button type="button" onClick={() => { setInlineUnlockId(null); setUnlockPw(''); setUnlockErr(''); }} className="px-3 py-1.5 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
                     </div>
@@ -1431,13 +1430,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   return (
-    <div className="h-full flex bg-[#fafafa]">
-      {navOpen && <button aria-hidden tabIndex={-1} onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/20 md:hidden cursor-default" />}
-      <aside className={`${navOpen ? 'flex' : 'hidden'} md:flex absolute md:static z-20 h-full w-52 shrink-0 flex-col border-r border-zinc-200 bg-white`}>
+    <div className="h-full flex bg-[#fafafa] min-w-0">
+      {/* Desktop sidebar only — removed on mobile */}
+      <aside className="hidden md:flex md:static h-full w-52 shrink-0 flex-col border-r border-zinc-200 bg-white">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-100">
           <div className="flex h-6 w-6 items-center justify-center bg-zinc-900 text-white text-xs rounded">V</div>
           <span className="text-sm font-semibold tracking-tight">All</span>
-          <button className="ml-auto md:hidden text-zinc-500" onClick={() => setNavOpen(false)} aria-label="Close menu">✕</button>
         </div>
         <nav className="flex-1 overflow-auto p-1.5">
           <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-zinc-400">All</p>
@@ -1464,7 +1462,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 {it.size ? <span className="ml-auto shrink-0 text-[10px] text-zinc-400 tabular-nums">{fmtSize(it.size)}</span> : null}
               </button>
               <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-100">
-                <button onClick={(e) => { e.stopPropagation(); openMenuAt(it.id, e); }} className="p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Options">
+                <button onClick={(e) => { e.stopPropagation(); openMenuAt(it.id, e); }} className="p-1 rounded text-zinc-400 hover:bg-zinc-100" aria-label="Options">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                 </button>
               </div>
@@ -1487,13 +1485,17 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0 relative">
-        <header className="flex items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2 md:hidden">
-          <button className="p-1.5 text-zinc-600" onClick={() => setNavOpen(true)} aria-label="Menu">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-          </button>
-          <span className="text-sm font-medium text-zinc-700 truncate">All</span>
-          <button type="button" onClick={() => setThemeMode(toggleTheme())} className="ml-auto p-1.5 rounded text-zinc-600 hover:bg-zinc-100" aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+        <header className="flex items-center gap-1.5 border-b border-zinc-200 bg-white px-2 py-2 md:hidden">
+          <div className="flex h-6 w-6 items-center justify-center bg-zinc-900 text-white text-[11px] rounded shrink-0">V</div>
+          <span className="text-sm font-medium text-zinc-700 truncate mr-auto">Vault</span>
+          <button type="button" onClick={() => setThemeMode(toggleTheme())} className="p-2 rounded text-zinc-600 hover:bg-zinc-100" aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
             {themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button type="button" onClick={() => { setSettingsTab('menu'); setShowSettings(true); }} className="p-2 rounded text-zinc-600 hover:bg-zinc-100" aria-label="Settings">
+            <Settings size={16} />
+          </button>
+          <button type="button" onClick={lock} className="p-2 rounded text-red-600 hover:bg-red-50" aria-label="Lock vault">
+            <LogOut size={16} />
           </button>
         </header>
 
@@ -1646,13 +1648,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   </div>
                 )}
               </div>
-              <table className="w-full table-fixed text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-hidden">
+              <div className="overflow-x-auto mx-auto max-w-4xl mb-4 min-w-0">
+              <table className="w-full min-w-[300px] sm:table-fixed table-auto text-sm bg-white border border-zinc-200 rounded-lg overflow-hidden">
                 <thead>
                   <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
                     <th className="px-3 py-2 font-medium">Name</th>
                     <th className="px-3 py-2 font-medium w-20">Type</th>
                     <th className="px-3 py-2 font-medium w-24 hidden sm:table-cell">Size</th>
-                    <th className="px-2 py-2 font-medium w-20">
+                    <th className="px-2 py-2 font-medium w-14 sm:w-20">
                       <div className="flex items-center justify-end gap-1">
                         <input
                           type="checkbox"
@@ -1787,6 +1790,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   )}
                 </tbody>
               </table>
+              </div>
               </>
               )}
               {!lockedId && (
