@@ -11,10 +11,14 @@ export default function LoginPage({ onUnlock }: { onUnlock?: () => void }) {
   const nav = useNavigate();
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!pw) { setErr('Password required.'); return; }
     setBusy(true); setErr('');
-    const ok = await loginVault(pw);
-    setBusy(false);
-    if (ok) { onUnlock?.(); nav('/app', { replace: true }); } else setErr('Incorrect password.');
+    try {
+      const ok = await loginVault(pw);
+      if (ok) { onUnlock?.(); nav('/app', { replace: true }); } else setErr('Incorrect password.');
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <AuthLayout>
@@ -28,8 +32,8 @@ export default function LoginPage({ onUnlock }: { onUnlock?: () => void }) {
           <label htmlFor="vault-master-pw" className="block text-xs font-medium text-zinc-600 mb-1.5">Master password</label>
           <input id="vault-master-pw" name="vault-master-password" type="password" autoComplete="current-password" value={pw} onChange={e => { setPw(e.target.value); setErr(''); }} className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" />
         </div>
-        {err && <p className="text-xs text-red-600">{err}</p>}
-        <button disabled={busy} className="w-full bg-zinc-900 text-white py-2 text-sm rounded hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
+        {err && <p className="text-xs text-red-600" role="alert">{err}</p>}
+        <button type="submit" disabled={busy} className="w-full bg-zinc-900 text-white py-2 text-sm rounded hover:bg-zinc-800 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">{busy ? 'Unlocking…' : 'Unlock'}</button>
       </form>
     </AuthLayout>
   );

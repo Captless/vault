@@ -32,7 +32,7 @@ button, input, textarea, select, a { touch-action: manipulation; }
 .row-slide-in { overflow: hidden; animation: row-slide-in 180ms ease-out; }
 .row-slide-out { overflow: hidden; animation: row-slide-out 160ms ease-in forwards; }
 @media (prefers-reduced-motion: reduce) {
-  .dialog-backdrop, .dialog-panel { animation: none; }
+  .dialog-backdrop, .dialog-panel, .row-slide-in, .row-slide-out { animation: none; }
 }
 
 /* minimal utilities */

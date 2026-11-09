@@ -35,7 +35,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [createErr, setCreateErr] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'menu' | 'master' | 'backup'>('menu');
-  const [deleteTarget, setDeleteTarget] = useState<{ type: 'folder' | 'item'; id: string; name: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ type: 'folder' | 'item'; id: string; name: string; decoy?: { rootId: string; rawId: string } } | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [folderActionsOpen, setFolderActionsOpen] = useState(false);
   const [plusMenuPos, setPlusMenuPos] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
@@ -43,7 +43,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [storage, setStorage] = useState('');
   const [menuId, setMenuId] = useState<string | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-  const [renameTarget, setRenameTarget] = useState<{ type: 'folder' | 'item'; id: string; name: string } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{ type: 'folder' | 'item'; id: string; name: string; decoy?: { rootId: string; rawId: string } } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [renameErr, setRenameErr] = useState('');
   const [lockTarget, setLockTarget] = useState<{ type: 'folder' | 'item'; id: string; name: string } | null>(null);
@@ -126,6 +126,19 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   function resetLockWizard() {
     setLockStep(1); setLockPw(''); setLockPw2(''); setLockDecoy(''); setLockErr('');
     setDecoyEnabled(true); setDecoyName(''); setDecoyFolders([]); setDecoyDocs([]);
+  }
+
+  function decoyMenuItems(dn: NonNullable<ReturnType<typeof findDecoyNode>>, menuId: string) {
+    const rawId = menuId.startsWith('decoy:') ? menuId.split(':').slice(2).join(':') : menuId;
+    const name = dn.kind === 'folder' ? (dn.folder?.name || 'Folder') : (dn.doc?.name || 'Document');
+    const isDoc = dn.kind === 'doc';
+    return (
+      <>
+        {isDoc && <button onClick={() => { setMenuId(null); openDecoyDoc(dn.rootId, rawId); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> Open</button>}
+        <button onClick={() => { setMenuId(null); setRenameTarget({ type: dn.kind === 'folder' ? 'folder' : 'item', id: menuId, name, decoy: { rootId: dn.rootId, rawId } }); setRenameValue(name); setRenameErr(''); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Pencil size={12} /> Rename</button>
+        <button onClick={() => { setMenuId(null); setDeleteTarget({ type: dn.kind === 'folder' ? 'folder' : 'item', id: menuId, name, decoy: { rootId: dn.rootId, rawId } }); }} className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-red-50 text-red-600 w-full text-left"><Trash2 size={12} /> Delete</button>
+      </>
+    );
   }
 
   function menuItems(id: string, kind: 'folder' | 'item', name: string, prot: string, itemKind?: string, mime?: string) {
@@ -339,6 +352,19 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     void saveDecoyTree(rootFolderId, tree);
   }
 
+  function findDecoyNode(id: string): { rootId: string; tree: DecoyTree; kind: 'folder' | 'doc'; folder?: DecoyTree['folders'][number]; doc?: DecoyTree['docs'][number] } | null {
+    const raw = id.startsWith('decoy:') ? id.split(':').slice(2).join(':') : id;
+    const scopedRoot = id.startsWith('decoy:') ? id.split(':')[1] : null;
+    const entries = scopedRoot && decoyActive[scopedRoot] ? [[scopedRoot, decoyActive[scopedRoot]] as [string, DecoyTree]] : Object.entries(decoyActive);
+    for (const [rootId, tree] of entries) {
+      const folder = tree.folders.find(f => f.id === raw);
+      if (folder) return { rootId, tree, kind: 'folder', folder };
+      const doc = tree.docs.find(d => d.id === raw);
+      if (doc) return { rootId, tree, kind: 'doc', doc };
+    }
+    return null;
+  }
+
   function getViewKind(mime?: string, name?: string): 'image' | 'pdf' | null {
     const m = (mime || '').toLowerCase();
     if (m.startsWith('image/')) return 'image';
@@ -406,32 +432,44 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setParentId(f.id);
   }
 
+  function revealExpanded(id: string, onExpand?: () => void) {
+    setClosingFolders(s => { const n = new Set(s); n.delete(id); return n; });
+    window.setTimeout(() => {
+      setExpandedFolders(s => new Set(s).add(id));
+      onExpand?.();
+    }, 50);
+  }
+
   async function doUnlock(targetId?: string | null) {
     const id = targetId ?? inlineUnlockId ?? lockedId;
     if (!id) return;
+    if (!unlockPw) { setUnlockErr('Password required.'); return; }
     setBusy(true); setUnlockErr('');
-    const ok = await unlockFolder(id, unlockPw);
-    setBusy(false);
-    if (ok) {
-      setInlineUnlockId(cur => (cur === id ? null : cur));
-      setLockedId(cur => (cur === id ? null : cur));
-      setUnlockPw('');
-      setExpandedFolders(s => new Set(s).add(id));
-      await load();
-      void loadSidebarItems(id);
-      return;
+    try {
+      const ok = await unlockFolder(id, unlockPw);
+      if (ok) {
+        setInlineUnlockId(cur => (cur === id ? null : cur));
+        setLockedId(cur => (cur === id ? null : cur));
+        setUnlockPw('');
+        revealExpanded(id);
+        await load();
+        void loadSidebarItems(id);
+        return;
+      }
+      // Wrong password → reveal decoy in place if one exists (silent, no error)
+      const decoyTree = await getDecoyTreeForFolder(id);
+      if (decoyTree) {
+        setInlineUnlockId(cur => (cur === id ? null : cur));
+        setLockedId(cur => (cur === id ? null : cur));
+        setUnlockPw('');
+        setDecoyActive(prev => ({ ...prev, [id]: decoyTree }));
+        revealExpanded(id);
+        return;
+      }
+      setUnlockErr('Incorrect password.');
+    } finally {
+      setBusy(false);
     }
-    // Wrong password → reveal decoy in place if one exists (silent, no error)
-    const decoyTree = await getDecoyTreeForFolder(id);
-    if (decoyTree) {
-      setInlineUnlockId(cur => (cur === id ? null : cur));
-      setLockedId(cur => (cur === id ? null : cur));
-      setUnlockPw('');
-      setDecoyActive(prev => ({ ...prev, [id]: decoyTree }));
-      setExpandedFolders(s => new Set(s).add(id));
-      return;
-    }
-    setUnlockErr('Incorrect password.');
   }
 
   async function doCreate() {
@@ -514,6 +552,18 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   async function doDelete() {
     if (!deleteTarget) return;
+    if (deleteTarget.decoy) {
+      const { rootId, rawId } = deleteTarget.decoy;
+      const tree = decoyActive[rootId];
+      if (tree) {
+        if (deleteTarget.type === 'folder') persistDecoyTreeForRoot(rootId, { ...tree, folders: tree.folders.filter(x => x.id !== rawId), docs: tree.docs.filter(x => x.folderId !== rawId) });
+        else persistDecoyTreeForRoot(rootId, { ...tree, docs: tree.docs.filter(x => x.id !== rawId) });
+        setDecoyExpanded(s => { const n = new Set(s); n.delete(rawId); return n; });
+      }
+      setSelected(s => { if (!s[deleteTarget.id]) return s; const n = { ...s }; delete n[deleteTarget.id]; return n; });
+      setDeleteTarget(null);
+      return;
+    }
     const id = deleteTarget.id;
     if (deleteTarget.type === 'folder') await deleteFolder(id);
     else await deleteItem(id);
@@ -525,7 +575,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   async function doBulkDelete() {
-    const entries = Object.entries(selected);
+    const entries = Object.entries(selected).filter(([id]) => !id.startsWith('decoy:'));
     for (const [id, type] of entries) {
       try {
         if (type === 'folder') await deleteFolder(id);
@@ -543,6 +593,16 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     if (!renameTarget) return;
     const v = renameValue.trim();
     if (!v) { setRenameErr('Name is required'); return; }
+    if (renameTarget.decoy) {
+      const { rootId, rawId } = renameTarget.decoy;
+      const tree = decoyActive[rootId];
+      if (tree) {
+        if (renameTarget.type === 'folder') persistDecoyTreeForRoot(rootId, { ...tree, folders: tree.folders.map(f => f.id === rawId ? { ...f, name: v } : f) });
+        else persistDecoyTreeForRoot(rootId, { ...tree, docs: tree.docs.map(d => d.id === rawId ? { ...d, name: v } : d) });
+      }
+      setRenameTarget(null); setRenameValue(''); setRenameErr('');
+      return;
+    }
     try {
       if (renameTarget.type === 'folder') {
         const f = await db.folders.get(renameTarget.id);
@@ -974,34 +1034,39 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       const hasChildren = tree.folders.some(x => x.parentId === f.id) || tree.docs.some(x => x.folderId === f.id);
       rows.push(
         <tr key={`decoy-${rootId}-${f.id}`} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50 bg-zinc-50/30">
-          <td className="px-3 py-1 overflow-hidden">
-            <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; }); }}
-                aria-label={expanded ? `Collapse ${f.name}` : `Expand ${f.name}`}
-                aria-expanded={expanded}
-                className={`p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${hasChildren ? '' : 'invisible'}`}
-                tabIndex={hasChildren ? 0 : -1}
-              >
-                <ChevronRight size={12} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}
-                title={hasChildren ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder'}
-                className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
-              >
-                <Folder size={15} className="text-zinc-500 shrink-0" />
-                <span className="truncate">{f.name}</span>
-              </button>
+          <td className="px-3 py-0 overflow-hidden">
+            <div className="row-slide-in py-1">
+              <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; }); }}
+                  aria-label={expanded ? `Collapse ${f.name}` : `Expand ${f.name}`}
+                  aria-expanded={expanded}
+                  className={`p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${hasChildren ? '' : 'invisible'}`}
+                  tabIndex={hasChildren ? 0 : -1}
+                >
+                  <ChevronRight size={12} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}
+                  title={hasChildren ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder'}
+                  className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
+                >
+                  <Folder size={15} className="text-zinc-500 shrink-0" />
+                  <span className="truncate">{f.name}</span>
+                </button>
+              </div>
             </div>
           </td>
-          <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
-          <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-          <td className="px-2 py-1">
-            <div className="flex items-center justify-end gap-1">
-              <button onClick={() => { persistDecoyTreeForRoot(rootId, { ...tree, folders: tree.folders.filter(x => x.id !== f.id), docs: tree.docs.filter(x => x.folderId !== f.id) }); setDecoyExpanded(s => { const n = new Set(s); n.delete(f.id); return n; }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
+          <td className="px-3 py-0 text-xs text-zinc-500"><div className="row-slide-in py-1 flex items-center">Folder</div></td>
+          <td className="px-3 py-0 text-xs text-zinc-500 hidden sm:table-cell"><div className="row-slide-in py-1 flex items-center">—</div></td>
+          <td className="px-2 py-0">
+            <div className="row-slide-in py-1 flex items-center justify-end gap-1">
+              <input type="checkbox" checked={!!selected[`decoy:${rootId}:${f.id}`]} onChange={() => toggleSelect(`decoy:${rootId}:${f.id}`, 'folder')} onClick={e => e.stopPropagation()} className="h-3.5 w-3.5 rounded border-zinc-300" aria-label={`Select ${f.name}`} />
+              <button type="button" onClick={(e) => openMenuAt(`decoy:${rootId}:${f.id}`, e)} className="p-1.5 rounded text-zinc-400 hover:text-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" aria-label="Options" aria-haspopup="menu" aria-expanded={menuId === `decoy:${rootId}:${f.id}`}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+              </button>
             </div>
           </td>
         </tr>
@@ -1014,20 +1079,25 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     for (const d of docs) {
       rows.push(
         <tr key={`decoy-${rootId}-${d.id}`} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50 bg-zinc-50/30">
-          <td className="px-3 py-1 overflow-hidden">
-            <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
-              <span className="shrink-0 w-5 h-5" aria-hidden />
-              <button onClick={() => openDecoyDoc(rootId, d.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                <FileText size={15} className="text-zinc-500 shrink-0" />
-                <span className="truncate">{d.name}</span>
-              </button>
+          <td className="px-3 py-0 overflow-hidden">
+            <div className="row-slide-in py-1">
+              <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+                <span className="shrink-0 w-5 h-5" aria-hidden />
+                <button type="button" onClick={() => openDecoyDoc(rootId, d.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                  <FileText size={15} className="text-zinc-500 shrink-0" />
+                  <span className="truncate">{d.name}</span>
+                </button>
+              </div>
             </div>
           </td>
-          <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
-          <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-          <td className="px-2 py-1">
-            <div className="flex items-center justify-end gap-1">
-              <button onClick={() => persistDecoyTreeForRoot(rootId, { ...tree, docs: tree.docs.filter(x => x.id !== d.id) })} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
+          <td className="px-3 py-0 text-xs text-zinc-500"><div className="row-slide-in py-1 flex items-center">{d.kind.toUpperCase()}</div></td>
+          <td className="px-3 py-0 text-xs text-zinc-500 hidden sm:table-cell"><div className="row-slide-in py-1 flex items-center">—</div></td>
+          <td className="px-2 py-0">
+            <div className="row-slide-in py-1 flex items-center justify-end gap-1">
+              <input type="checkbox" checked={!!selected[`decoy:${rootId}:${d.id}`]} onChange={() => toggleSelect(`decoy:${rootId}:${d.id}`, 'item')} onClick={e => e.stopPropagation()} className="h-3.5 w-3.5 rounded border-zinc-300" aria-label={`Select ${d.name}`} />
+              <button type="button" onClick={(e) => openMenuAt(`decoy:${rootId}:${d.id}`, e)} className="p-1.5 rounded text-zinc-400 hover:text-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" aria-label="Options" aria-haspopup="menu" aria-expanded={menuId === `decoy:${rootId}:${d.id}`}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+              </button>
             </div>
           </td>
         </tr>
@@ -1114,7 +1184,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   <form onSubmit={(e) => { e.preventDefault(); void doUnlock(f.id); }} className="max-w-sm space-y-2">
                     <p className="text-xs text-zinc-600 flex items-center gap-1.5"><Lock size={12} /> Enter password for <span className="font-medium text-zinc-800">{fname}</span></p>
                     <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Folder password" autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} className="w-full border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
-                    {unlockErr && <p className="text-xs text-red-600">{unlockErr}</p>}
+                    {unlockErr && <p className="text-xs text-red-600" role="alert">{unlockErr}</p>}
                     <div className="flex items-center gap-2">
                       <button type="submit" disabled={busy} className="px-3 py-1.5 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
                       <button type="button" onClick={() => { setInlineUnlockId(null); setUnlockPw(''); setUnlockErr(''); }} className="px-3 py-1.5 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
@@ -1494,7 +1564,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             spellCheck={false}
                             className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900 bg-white"
                           />
-                          {unlockErr && <p className="text-xs text-red-600">{unlockErr}</p>}
+                          {unlockErr && <p className="text-xs text-red-600" role="alert">{unlockErr}</p>}
                           <button type="submit" disabled={busy} className="w-full px-4 py-2 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
                         </form>
                       </td>
@@ -1604,6 +1674,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           return (
             <RowMenu open onClose={() => setMenuId(null)}>
               {menuItems(cached.id, 'item', cached.name, 'unprotected', cached.kind, cached.mime)}
+            </RowMenu>
+          );
+        }
+        const dn = menuId ? findDecoyNode(menuId) : null;
+        if (dn && menuId) {
+          return (
+            <RowMenu open onClose={() => setMenuId(null)}>
+              {decoyMenuItems(dn, menuId)}
             </RowMenu>
           );
         }
