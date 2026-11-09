@@ -64,14 +64,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [folderSizes, setFolderSizes] = useState<Record<string, number>>({});
   const [foldersWithItems, setFoldersWithItems] = useState<Set<string>>(new Set());
   // Decoy view (wrong folder password)
-  const [decoyMode, setDecoyMode] = useState<{ folderId: string; tree: DecoyTree; subId: string | null } | null>(null);
-  const [decoySearchQuery, setDecoySearchQuery] = useState('');
+  // Decoy revealed inline (wrong password → show fake contents in place, like unlock)
+  const [decoyActive, setDecoyActive] = useState<Record<string, DecoyTree>>({});
   const [decoyExpanded, setDecoyExpanded] = useState<Set<string>>(new Set());
-  useEffect(() => { setDecoyExpanded(new Set()); }, [decoyMode?.folderId]);
   // Inline editor (stays inside main layout: sidebar + header remain)
   const [editingId, setEditingId] = useState<string | null>(null);
-  // Inline decoy editor (same: sidebar stays, doc opens as its own section)
+  // Inline decoy editor
   const [decoyEditingId, setDecoyEditingId] = useState<string | null>(null);
+  const [decoyEditingRootId, setDecoyEditingRootId] = useState<string | null>(null);
   // Collapsed/expanded folders in the sidebar tree (VS Code style chevron)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [closingFolders, setClosingFolders] = useState<Set<string>>(new Set());
@@ -232,7 +232,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }, [parentId, loadSidebarItems]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { setSelected({}); }, [parentId, decoyMode?.folderId, decoyMode?.subId]);
+  useEffect(() => { setSelected({}); }, [parentId]);
 
   // Strict auto-lock: leaving the current folder (any navigation) clears its
   // key and resets the unlock password input. Tracked via ref so the cleanup
@@ -305,14 +305,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         const t = await getDecoyTree(fid);
         if (t) {
           sessionStorage.removeItem('decoy-folder');
-          setDecoyMode({ folderId: fid, tree: t, subId: null });
-          setCrumbs([{ id: null, name: 'All' }, { id: null, name: t.name }]);
+          setDecoyActive(prev => ({ ...prev, [fid]: t }));
+          setExpandedFolders(s => new Set(s).add(fid));
         }
       } catch { /* ignore */ }
     })();
   }, []);
 
-  async function enterDecoyView(folderId: string) {
+  async function getDecoyTreeForFolder(folderId: string): Promise<DecoyTree | null> {
     let tree = await getDecoyTree(folderId);
     if (!tree) {
       // Fallback: per-document decoys for txt/md items inside this folder
@@ -326,12 +326,17 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         try { nm = (await getItemMeta(it)).name; } catch { /* locked meta — use generic */ }
         docs.push({ id: it.id, folderId: null, name: nm, kind: it.kind, text });
       }
-      if (docs.length === 0) return false;
-      tree = { name: 'Folder', folders: [], docs };
+      if (docs.length === 0) return null;
+      let folderName = 'Folder';
+      try { const f = await db.folders.get(folderId); if (f) folderName = (await getFolderMeta(f)).name; } catch { /* ignore */ }
+      tree = { name: folderName, folders: [], docs };
     }
-    setDecoyMode({ folderId, tree, subId: null });
-    setCrumbs([{ id: null, name: 'All' }]);
-    return true;
+    return tree;
+  }
+
+  function persistDecoyTreeForRoot(rootFolderId: string, tree: DecoyTree) {
+    setDecoyActive(prev => ({ ...prev, [rootFolderId]: tree }));
+    void saveDecoyTree(rootFolderId, tree);
   }
 
   function getViewKind(mime?: string, name?: string): 'image' | 'pdf' | null {
@@ -416,14 +421,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       void loadSidebarItems(id);
       return;
     }
-    // Wrong password → decoy view if one exists (silent, no error)
-    const entered = await enterDecoyView(id);
-    if (entered) {
+    // Wrong password → reveal decoy in place if one exists (silent, no error)
+    const decoyTree = await getDecoyTreeForFolder(id);
+    if (decoyTree) {
       setInlineUnlockId(cur => (cur === id ? null : cur));
       setLockedId(cur => (cur === id ? null : cur));
       setUnlockPw('');
-      setExpandedFolders(s => { const n = new Set(s); n.delete(id); return n; });
-      setSidebarItems(s => { const n = { ...s }; delete n[id]; return n; });
+      setDecoyActive(prev => ({ ...prev, [id]: decoyTree }));
+      setExpandedFolders(s => new Set(s).add(id));
       return;
     }
     setUnlockErr('Incorrect password.');
@@ -633,16 +638,6 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   function goCrumb(c: { id: string | null; name: string }, idx: number) {
-    if (decoyMode) {
-      setDecoySearchQuery('');
-      setDecoyEditingId(null);
-      if (idx <= 0) {
-        setDecoyMode(null);
-        setCrumbs([{ id: null, name: 'All' }]);
-        setParentId(null);
-      }
-      return;
-    }
     if (c.id === parentId) return;
     leaveCurrentFolder();
     setCrumbs(prev => prev.slice(0, idx + 1));
@@ -654,13 +649,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   function lock() { clearSession(); try { sessionStorage.removeItem('decoy-folder'); } catch { /* ignore */ } onLock?.(); nav('/login'); }
 
   // Decoy view helpers
-  async function persistDecoyTree(tree: DecoyTree) {
-    if (!decoyMode) return;
-    await saveDecoyTree(decoyMode.folderId, tree);
-    setDecoyMode(m => m ? { ...m, tree } : m);
-  }
-  function openDecoyDoc(docId: string) {
-    if (!decoyMode) return;
+
+  function openDecoyDoc(rootFolderId: string, docId: string) {
+    setDecoyEditingRootId(rootFolderId);
     setDecoyEditingId(docId);
   }
 
@@ -676,11 +667,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     const kids = treeChildren.get(parent) ?? [];
     return kids.map(f => {
       const isProtected = f.protection === 'protected';
-      const locked = isProtected && !getFolderKey(f.id);
-      const hasKidsFolders = (treeChildren.get(f.id)?.length ?? 0) > 0;
-      const files = locked ? [] : (sidebarItems[f.id] || []);
-      const hasFiles = foldersWithItems.has(f.id) || files.length > 0;
-      const canExpand = isProtected || hasKidsFolders || hasFiles;
+      const decoyTree = decoyActive[f.id];
+      const locked = isProtected && !getFolderKey(f.id) && !decoyTree;
+      const hasKidsFolders = decoyTree ? decoyTree.folders.length > 0 : (treeChildren.get(f.id)?.length ?? 0) > 0;
+      const files = (locked || decoyTree) ? [] : (sidebarItems[f.id] || []);
+      const hasFiles = decoyTree ? decoyTree.docs.length > 0 : (foldersWithItems.has(f.id) || files.length > 0);
+      const canExpand = isProtected || !!decoyTree || hasKidsFolders || hasFiles;
       const expanded = expandedFolders.has(f.id) && !locked;
       return (
         <div key={f.id}>
@@ -690,9 +682,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           >
             <button
               onClick={() => {
-                if (locked) { setUnlockPw(''); setUnlockErr(''); setInlineUnlockId(cur => (cur === f.id ? null : f.id)); void loadSidebarItems(f.id); return; }
+                if (locked) { setUnlockPw(''); setUnlockErr(''); setInlineUnlockId(cur => (cur === f.id ? null : f.id)); return; }
                 if (!canExpand) return;
-                toggleExpand(f.id, () => void loadSidebarItems(f.id));
+                toggleExpand(f.id, decoyTree ? undefined : () => void loadSidebarItems(f.id));
               }}
               aria-label={expanded ? `Collapse ${treeNames[f.id]}` : `Expand ${treeNames[f.id]}`}
               aria-expanded={expanded}
@@ -710,10 +702,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   let p: DbFolder | undefined = f;
                   while (p?.parentId) { chain.push(p.parentId); p = treeFolders.find(x => x.id === p!.parentId); }
                   setExpandedFolders(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
-                  void loadSidebarItems(f.id);
                   return;
                 }
-                if (canExpand) toggleExpand(f.id, () => void loadSidebarItems(f.id));
+                if (canExpand) toggleExpand(f.id, decoyTree ? undefined : () => void loadSidebarItems(f.id));
               }}
               title={locked ? 'Locked folder — unlock' : (canExpand ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder')}
               className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left truncate min-w-0"
@@ -736,8 +727,10 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           {canExpand && (
             <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
-                {hasKidsFolders && renderTree(f.id, depth + 1)}
-                {files.map(it => (
+                {decoyTree && expanded ? renderDecoySidebarTree(f.id, decoyTree, null, depth + 1) : (
+                  <>
+                    {hasKidsFolders && renderTree(f.id, depth + 1)}
+                    {files.map(it => (
                   <div
                     key={it.id}
                     className="group relative flex items-center gap-0.5 pr-2 rounded hover:bg-zinc-100 text-zinc-600"
@@ -762,6 +755,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     </div>
                   </div>
                 ))}
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -772,7 +767,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   // Decoy view (expand/collapse, no drill-down; contents collapsed by default)
 
-  const selectableTop = decoyMode ? [] : [
+  const selectableTop = [
     ...(treeChildren.get(parentId) ?? []).map(f => ({ id: f.id, type: 'folder' as const })),
     ...items.map(it => ({ id: it.id, type: 'item' as const })),
   ];
@@ -798,10 +793,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     lastRowClick.current = { id, at: now };
     const expanding = !expandedFolders.has(id);
     if (!expanding) {
-      // Re-lock protected folders on collapse (session key cleared) so next expand asks password.
+      // Re-lock protected folders on collapse (session key cleared) or hide decoy
       if (getFolderKey(id)) {
         import('../services/crypto.service').then(m => m.setFolderKey(id, null));
         setSidebarItems(s => { const n = { ...s }; delete n[id]; return n; });
+      }
+      if (decoyActive[id]) {
+        setDecoyActive(s => { const n = { ...s }; delete n[id]; return n; });
       }
       setInlineUnlockId(cur => (cur === id ? null : cur));
       setClosingFolders(s => { const n = new Set(s); n.add(id); return n; });
@@ -931,6 +929,113 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setEditingId(hit.id);
   }
 
+  // Render decoy (fake) folder contents inline when a protected folder is decoy-revealed
+  function renderDecoySidebarTree(rootId: string, tree: DecoyTree, decoyParentId: string | null, depth: number): React.ReactNode {
+    const folders = tree.folders.filter(f => f.parentId === decoyParentId);
+    const docs = tree.docs.filter(d => d.folderId === decoyParentId);
+    return (
+      <>
+        {folders.map(f => {
+          const expanded = decoyExpanded.has(f.id);
+          const hasChildren = tree.folders.some(x => x.parentId === f.id) || tree.docs.some(x => x.folderId === f.id);
+          return (
+            <div key={`ds-${rootId}-${f.id}`}>
+              <div className="group relative flex items-center gap-0.5 pr-2 rounded hover:bg-zinc-100 text-zinc-700" style={{ paddingLeft: `${0.25 + depth * 0.75}rem` }}>
+                <button onClick={() => setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })} aria-label={expanded ? `Collapse ${f.name}` : `Expand ${f.name}`} aria-expanded={expanded} className={`p-0.5 rounded text-zinc-400 hover:text-zinc-900 ${hasChildren ? '' : 'invisible'}`} tabIndex={hasChildren ? 0 : -1}>
+                  <ChevronRight size={12} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+                </button>
+                <button onClick={() => setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })} className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left truncate min-w-0">
+                  <Folder size={12} className="shrink-0 text-zinc-500" />
+                  <span className="truncate">{f.name}</span>
+                </button>
+              </div>
+              {expanded && hasChildren && <div>{renderDecoySidebarTree(rootId, tree, f.id, depth + 1)}</div>}
+            </div>
+          );
+        })}
+        {docs.map(d => (
+          <div key={`ds-${rootId}-${d.id}`} className="group relative flex items-center gap-0.5 pr-2 rounded hover:bg-zinc-100 text-zinc-600" style={{ paddingLeft: `${0.25 + depth * 0.75 + 1.0}rem` }}>
+            <button onClick={() => openDecoyDoc(rootId, d.id)} className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0" title={d.name}>
+              <FileText size={12} className="shrink-0 text-zinc-400" />
+              <span className="truncate">{d.name}</span>
+            </button>
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  function renderDecoyTableRows(rootId: string, tree: DecoyTree, decoyParentId: string | null, depth: number): React.ReactNode[] {
+    const folders = tree.folders.filter(f => f.parentId === decoyParentId);
+    const docs = tree.docs.filter(d => d.folderId === decoyParentId);
+    const rows: React.ReactNode[] = [];
+    for (const f of folders) {
+      const expanded = decoyExpanded.has(f.id);
+      const hasChildren = tree.folders.some(x => x.parentId === f.id) || tree.docs.some(x => x.folderId === f.id);
+      rows.push(
+        <tr key={`decoy-${rootId}-${f.id}`} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50 bg-zinc-50/30">
+          <td className="px-3 py-1 overflow-hidden">
+            <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; }); }}
+                aria-label={expanded ? `Collapse ${f.name}` : `Expand ${f.name}`}
+                aria-expanded={expanded}
+                className={`p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${hasChildren ? '' : 'invisible'}`}
+                tabIndex={hasChildren ? 0 : -1}
+              >
+                <ChevronRight size={12} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDecoyExpanded(s => { const n = new Set(s); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}
+                title={hasChildren ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder'}
+                className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
+              >
+                <Folder size={15} className="text-zinc-500 shrink-0" />
+                <span className="truncate">{f.name}</span>
+              </button>
+            </div>
+          </td>
+          <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
+          <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+          <td className="px-2 py-1">
+            <div className="flex items-center justify-end gap-1">
+              <button onClick={() => { persistDecoyTreeForRoot(rootId, { ...tree, folders: tree.folders.filter(x => x.id !== f.id), docs: tree.docs.filter(x => x.folderId !== f.id) }); setDecoyExpanded(s => { const n = new Set(s); n.delete(f.id); return n; }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
+            </div>
+          </td>
+        </tr>
+      );
+      if (expanded) {
+        if (hasChildren) rows.push(...renderDecoyTableRows(rootId, tree, f.id, depth + 1));
+        else rows.push(<tr key={`decoy-${rootId}-${f.id}-empty`} className="border-b border-zinc-100 bg-zinc-50/30"><td colSpan={4} className="px-3 py-2"><div style={{ paddingLeft: (depth + 1) * 16 + 24 }} className="text-xs text-zinc-500">This folder is empty.</div></td></tr>);
+      }
+    }
+    for (const d of docs) {
+      rows.push(
+        <tr key={`decoy-${rootId}-${d.id}`} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50 bg-zinc-50/30">
+          <td className="px-3 py-1 overflow-hidden">
+            <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+              <span className="shrink-0 w-5 h-5" aria-hidden />
+              <button onClick={() => openDecoyDoc(rootId, d.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                <FileText size={15} className="text-zinc-500 shrink-0" />
+                <span className="truncate">{d.name}</span>
+              </button>
+            </div>
+          </td>
+          <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
+          <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+          <td className="px-2 py-1">
+            <div className="flex items-center justify-end gap-1">
+              <button onClick={() => persistDecoyTreeForRoot(rootId, { ...tree, docs: tree.docs.filter(x => x.id !== d.id) })} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
+            </div>
+          </td>
+        </tr>
+      );
+    }
+    return rows;
+  }
+
   // File-explorer style rows: expanding a folder lists its subfolders inline.
   // Locked folders never expand — clicking them opens the password card.
   function renderFolderRows(parent: string | null, depth: number, closing = false): React.ReactNode {
@@ -938,10 +1043,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     return kids.map(f => {
       const fname = folderName(f.id);
       const isProtected = f.protection === 'protected';
-      const locked = isProtected && !getFolderKey(f.id);
-      const hasSubfolders = (treeChildren.get(f.id)?.length ?? 0) > 0;
-      const hasFiles = foldersWithItems.has(f.id) || (sidebarItems[f.id]?.length ?? 0) > 0;
-      const canExpand = isProtected || hasSubfolders || hasFiles;
+      const decoyTree = decoyActive[f.id];
+      const locked = isProtected && !getFolderKey(f.id) && !decoyTree;
+      const hasSubfolders = decoyTree ? decoyTree.folders.length > 0 : (treeChildren.get(f.id)?.length ?? 0) > 0;
+      const hasFiles = decoyTree ? decoyTree.docs.length > 0 : (foldersWithItems.has(f.id) || (sidebarItems[f.id]?.length ?? 0) > 0);
+      const canExpand = isProtected || !!decoyTree || hasSubfolders || hasFiles;
       const expanded = expandedFolders.has(f.id);
       const nested = depth > 0;
       const anim = nested ? (closing ? 'row-slide-out' : 'row-slide-in') : '';
@@ -958,7 +1064,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                       e.stopPropagation();
                       if (locked) { setUnlockPw(''); setUnlockErr(''); setInlineUnlockId(cur => (cur === f.id ? null : f.id)); return; }
                       if (!canExpand) return;
-                      toggleExpand(f.id, () => void loadSidebarItems(f.id));
+                      toggleExpand(f.id, decoyTree ? undefined : () => void loadSidebarItems(f.id));
                     }}
                     className={`p-1 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${canExpand ? '' : 'invisible'}`}
                     aria-label={expanded ? `Collapse ${fname}` : `Expand ${fname}`}
@@ -972,17 +1078,16 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                       if (locked) {
                         setUnlockPw(''); setUnlockErr('');
                         setInlineUnlockId(cur => (cur === f.id ? null : f.id));
-                        void loadSidebarItems(f.id);
                         return;
                       }
-                      if (canExpand) toggleExpand(f.id, () => void loadSidebarItems(f.id));
+                      if (canExpand) toggleExpand(f.id, decoyTree ? undefined : () => void loadSidebarItems(f.id));
                     }}
                     title={locked ? 'Locked folder — unlock' : (canExpand ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder')}
                     className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
                   >
                     <Folder size={15} className="text-zinc-500 shrink-0" />
                     <span className="truncate">{fname}</span>
-                    {f.protection === 'protected' && <span title="Locked" className="ml-0.5 flex items-center gap-1 text-[10px] leading-none text-zinc-600 border border-zinc-300 bg-zinc-100 rounded px-1 py-0.5 shrink-0"><Lock size={10} /> locked</span>}
+                    {locked && <span title="Locked" className="ml-0.5 flex items-center gap-1 text-[10px] leading-none text-zinc-600 border border-zinc-300 bg-zinc-100 rounded px-1 py-0.5 shrink-0"><Lock size={10} /> locked</span>}
                   </button>
                 </div>
               </div>
@@ -1021,53 +1126,66 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           )}
           {(expandedFolders.has(f.id) || closingFolders.has(f.id)) && !locked && (
             <>
-              {renderFolderRows(f.id, depth + 1, closingFolders.has(f.id))}
-              {Array.isArray(sidebarItems[f.id]) && (treeChildren.get(f.id)?.length ?? 0) === 0 && (sidebarItems[f.id] || []).length === 0 && (
-                <tr className="border-b border-zinc-100 bg-zinc-50/30">
-                  <td colSpan={4} className="px-3 py-2 text-xs text-zinc-500" style={{ paddingLeft: (depth + 1) * 16 + 12 }}>This folder is empty.</td>
-                </tr>
+              {decoyTree ? (
+                <>
+                  {renderDecoyTableRows(f.id, decoyTree, null, depth + 1)}
+                  {decoyTree.folders.length === 0 && decoyTree.docs.length === 0 && (
+                    <tr className="border-b border-zinc-100 bg-zinc-50/30">
+                      <td colSpan={4} className="px-3 py-2 text-xs text-zinc-500" style={{ paddingLeft: (depth + 1) * 16 + 12 }}>This folder is empty.</td>
+                    </tr>
+                  )}
+                </>
+              ) : (
+                <>
+                  {renderFolderRows(f.id, depth + 1, closingFolders.has(f.id))}
+                  {Array.isArray(sidebarItems[f.id]) && (treeChildren.get(f.id)?.length ?? 0) === 0 && (sidebarItems[f.id] || []).length === 0 && (
+                    <tr className="border-b border-zinc-100 bg-zinc-50/30">
+                      <td colSpan={4} className="px-3 py-2 text-xs text-zinc-500" style={{ paddingLeft: (depth + 1) * 16 + 12 }}>This folder is empty.</td>
+                    </tr>
+                  )}
+                  {(sidebarItems[f.id] || []).map(it => {
+                    const childClosing = closingFolders.has(f.id);
+                    const childAnim = childClosing ? 'row-slide-out' : 'row-slide-in';
+                    return (
+                      <tr key={it.id} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50 bg-zinc-50/30">
+                        <td className="px-3 py-0">
+                          <div className={`${childAnim} py-1`}>
+                            <div className="flex items-center gap-1" style={{ paddingLeft: (depth + 1) * 16 }}>
+                              <span className="shrink-0 w-5 h-5" aria-hidden />
+                              {it.kind === 'txt' || it.kind === 'md' ? (
+                                <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                                  <FileText size={15} className="text-zinc-500 shrink-0" />
+                                  <span className="truncate">{it.name}</span>
+                                </button>
+                              ) : it.kind === 'file' && getViewKind(it.mime, it.name) ? (
+                                <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <span className="truncate">{it.name}</span>
+                                </button>
+                              ) : (
+                                <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
+                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <span className="truncate">{it.name}</span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 text-xs text-zinc-500 py-0"><div className={`${childAnim} py-1 flex items-center`}>{it.kind.toUpperCase()}</div></td>
+                        <td className="px-3 text-xs text-zinc-500 hidden sm:table-cell py-0"><div className={`${childAnim} py-1 flex items-center`}>{fmtSize(it.size)}</div></td>
+                        <td className="px-2 py-0">
+                          <div className={`${childAnim} py-1 flex items-center justify-end gap-1`}>
+                            <input type="checkbox" checked={!!selected[it.id]} onChange={() => toggleSelect(it.id, 'item')} onClick={e => e.stopPropagation()} className="h-3.5 w-3.5 rounded border-zinc-300" aria-label={`Select ${it.name}`} />
+                            <button onClick={(e) => openMenuAt(it.id, e)} className="p-1.5 rounded text-zinc-400 hover:text-zinc-900" aria-label="Options" aria-haspopup="menu" aria-expanded={menuId === it.id}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </>
               )}
-              {(sidebarItems[f.id] || []).map(it => {
-                const childClosing = closingFolders.has(f.id);
-                const childAnim = childClosing ? 'row-slide-out' : 'row-slide-in';
-                return (
-                  <tr key={it.id} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50 bg-zinc-50/30">
-                    <td className="px-3 py-0">
-                      <div className={`${childAnim} py-1`}>
-                        <div className="flex items-center gap-1" style={{ paddingLeft: (depth + 1) * 16 }}>
-                          <span className="shrink-0 w-5 h-5" aria-hidden />
-                          {it.kind === 'txt' || it.kind === 'md' ? (
-                            <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                              <FileText size={15} className="text-zinc-500 shrink-0" />
-                              <span className="truncate">{it.name}</span>
-                            </button>
-                          ) : it.kind === 'file' && getViewKind(it.mime, it.name) ? (
-                            <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                              <File size={15} className="text-zinc-500 shrink-0" />
-                              <span className="truncate">{it.name}</span>
-                            </button>
-                          ) : (
-                            <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
-                              <File size={15} className="text-zinc-500 shrink-0" />
-                              <span className="truncate">{it.name}</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-3 text-xs text-zinc-500 py-0"><div className={`${childAnim} py-1 flex items-center`}>{it.kind.toUpperCase()}</div></td>
-                    <td className="px-3 text-xs text-zinc-500 hidden sm:table-cell py-0"><div className={`${childAnim} py-1 flex items-center`}>{fmtSize(it.size)}</div></td>
-                    <td className="px-2 py-0">
-                      <div className={`${childAnim} py-1 flex items-center justify-end gap-1`}>
-                        <input type="checkbox" checked={!!selected[it.id]} onChange={() => toggleSelect(it.id, 'item')} onClick={e => e.stopPropagation()} className="h-3.5 w-3.5 rounded border-zinc-300" aria-label={`Select ${it.name}`} />
-                        <button onClick={(e) => openMenuAt(it.id, e)} className="p-1.5 rounded text-zinc-400 hover:text-zinc-900" aria-label="Options" aria-haspopup="menu" aria-expanded={menuId === it.id}>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
             </>
           )}
         </Fragment>
@@ -1087,13 +1205,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         <nav className="flex-1 overflow-auto p-1.5">
           <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-zinc-400">All</p>
           <button
-            onClick={() => { leaveCurrentFolder(); setDecoySearchQuery(''); if (decoyMode) setDecoyMode(null); setCrumbs([{ id: null, name: 'All' }]); setParentId(null); }}
-            className={`w-full flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-zinc-100 ${parentId === null && !decoyMode ? 'bg-zinc-100 font-medium' : 'text-zinc-700'}`}
+            onClick={() => { leaveCurrentFolder(); setDecoyActive({}); setDecoyEditingId(null); setDecoyEditingRootId(null); setCrumbs([{ id: null, name: 'All' }]); setParentId(null); }}
+            className={`w-full flex items-center gap-1.5 px-2 py-1 text-xs rounded hover:bg-zinc-100 ${parentId === null ? 'bg-zinc-100 font-medium' : 'text-zinc-700'}`}
           >
             <FolderOpen size={12} className="text-zinc-500" /> ALL
           </button>
-          {!decoyMode && renderTree(null, 0)}
-          {!decoyMode && (sidebarItems['root'] || []).map(it => (
+          {renderTree(null, 0)}
+          {(sidebarItems['root'] || []).map(it => (
             <div
               key={it.id}
               className="group relative flex items-center gap-0.5 pr-2 rounded hover:bg-zinc-100 text-zinc-600"
@@ -1137,7 +1255,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </header>
 
         <div className="flex-1 overflow-auto min-h-0 flex flex-col pb-20">
-          {editingId || (decoyMode && decoyEditingId) ? (
+          {editingId || decoyEditingId ? (
             <div>
               <div className="max-w-4xl mx-auto mt-4 mb-2 h-10" />
               <table className="w-full table-fixed text-sm bg-white mx-auto max-w-4xl mt-0 border border-zinc-200 rounded-t-lg overflow-hidden border-b-0">
@@ -1153,7 +1271,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   {(() => {
                     const editingFile = editingId ? (items.find(i => i.id === editingId) ?? Object.values(sidebarItems).flat().find(x => x.id === editingId)) : null;
                     const editingName = editingId ? (names[editingId] || (editingFile && 'name' in editingFile ? editingFile.name : '') || 'File') : null;
-                    const decoyDoc = decoyEditingId && decoyMode ? decoyMode.tree.docs.find(d => d.id === decoyEditingId) : null;
+                    const decoyTree = decoyEditingRootId ? decoyActive[decoyEditingRootId] : null;
+                    const decoyDoc = decoyEditingId && decoyTree ? decoyTree.docs.find(d => d.id === decoyEditingId) : null;
                     const fileCrumb = editingId && editingName ? { id: editingId, name: editingName } : (decoyDoc ? { id: decoyDoc.id, name: decoyDoc.name } : null);
                     const displayCrumbs = fileCrumb ? [...crumbs, fileCrumb] : crumbs;
                     const typeLabel = editingId ? ((editingFile?.kind || 'file').toUpperCase()) : decoyDoc ? decoyDoc.kind.toUpperCase() : 'Folder';
@@ -1166,7 +1285,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               type="button"
                               onClick={() => {
                                 if (editingId) void closeEditor();
-                                else if (decoyMode && decoyEditingId) setDecoyEditingId(null);
+                                else if (decoyEditingId) { setDecoyEditingId(null); setDecoyEditingRootId(null); }
                               }}
                               className="p-1 rounded text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 shrink-0"
                               aria-label="Back"
@@ -1183,7 +1302,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                                     onClick={() => {
                                       if (fileCrumb && c.id === fileCrumb.id) return;
                                       if (editingId) void closeEditor().then(() => goCrumb(c, i));
-                                      else if (decoyEditingId) { setDecoyEditingId(null); goCrumb(c, i); }
+                                      else if (decoyEditingId) { setDecoyEditingId(null); setDecoyEditingRootId(null); goCrumb(c, i); }
                                       else goCrumb(c, i);
                                     }}
                                     className={`truncate max-w-[12rem] px-0.5 py-0.5 rounded ${i === displayCrumbs.length - 1 ? 'font-medium text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900'}`}
@@ -1207,286 +1326,16 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
               <div className="max-w-4xl mx-auto bg-white border border-t-0 border-zinc-200 rounded-b-lg overflow-hidden mb-4 flex flex-col h-[60vh] min-h-[400px]">
                 {editingId ? (
                   <EditorPage itemId={editingId} onClose={() => void closeEditor()} />
-                ) : decoyMode && decoyEditingId ? (
+                ) : decoyEditingId && decoyEditingRootId && decoyActive[decoyEditingRootId] ? (
                   <DecoyEditorInline
-                    folderId={decoyMode.folderId}
+                    folderId={decoyEditingRootId}
                     docId={decoyEditingId}
-                    tree={decoyMode.tree}
-                    onTreeChange={tree => setDecoyMode(m => m ? { ...m, tree } : m)}
-                    onClose={() => setDecoyEditingId(null)}
+                    tree={decoyActive[decoyEditingRootId]}
+                    onTreeChange={tree => persistDecoyTreeForRoot(decoyEditingRootId, tree)}
+                    onClose={() => { setDecoyEditingId(null); setDecoyEditingRootId(null); }}
                   />
                 ) : null}
               </div>
-            </div>
-          ) : decoyMode ? (
-            <div>
-              {(() => {
-                const dq = decoySearchQuery.trim().toLowerCase();
-                const decoyFolderPath = (folderId: string | null): string => {
-                  const parts = ['All', decoyMode.tree.name];
-                  if (!folderId) return parts.join(' / ');
-                  const chain: typeof decoyMode.tree.folders = [];
-                  let cur = decoyMode.tree.folders.find(f => f.id === folderId);
-                  while (cur) { chain.unshift(cur); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
-                  for (const c of chain) parts.push(c.name);
-                  return parts.join(' / ');
-                };
-                const dFolderHits = dq ? decoyMode.tree.folders.filter(f => f.name.toLowerCase().includes(dq)).map(f => ({ id: f.id, name: f.name, path: decoyFolderPath(f.id) })) : [];
-                const dDocHits = dq ? decoyMode.tree.docs.filter(d => d.name.toLowerCase().includes(dq)).map(d => ({ id: d.id, name: d.name, kind: d.kind, path: decoyFolderPath(d.folderId) })) : [];
-                const openDecoyFolderById = (folderId: string) => {
-                  setDecoySearchQuery('');
-                  const chain: string[] = [decoyMode.folderId, folderId];
-                  let cur = decoyMode.tree.folders.find(f => f.id === folderId);
-                  while (cur?.parentId) { chain.unshift(cur.parentId); cur = decoyMode.tree.folders.find(f => f.id === cur!.parentId); }
-                  setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
-                  setCrumbs([{ id: null, name: 'All' }]);
-                  setDecoyMode(m => m ? { ...m, subId: null } : m);
-                };
-                const openDecoyDocHit = (docId: string, folderId: string | null) => {
-                  setDecoySearchQuery('');
-                  const chain: string[] = [decoyMode.folderId];
-                  if (folderId) {
-                    let cur = decoyMode.tree.folders.find(f => f.id === folderId);
-                    while (cur) { chain.unshift(cur.id); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
-                  }
-                  setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
-                  setCrumbs([{ id: null, name: 'All' }]);
-                  setDecoyMode(m => m ? { ...m, subId: null } : m);
-                  openDecoyDoc(docId);
-                };
-                const toggleDecoyExpand = (id: string) => setDecoyExpanded(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-                const renderDecoyRows = (pid: string | null, depth: number): React.ReactNode[] => {
-                  const folders = decoyMode.tree.folders.filter(f => f.parentId === pid);
-                  const docs = decoyMode.tree.docs.filter(d => d.folderId === pid);
-                  const rows: React.ReactNode[] = [];
-                  for (const f of folders) {
-                    const expanded = decoyExpanded.has(f.id);
-                    const hasChildren = decoyMode.tree.folders.some(x => x.parentId === f.id) || decoyMode.tree.docs.some(x => x.folderId === f.id);
-                    rows.push(
-                      <tr key={f.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                        <td className="px-3 py-1 overflow-hidden">
-                          <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: depth * 16 }}>
-                            <button
-                              type="button"
-                              onClick={() => toggleDecoyExpand(f.id)}
-                              aria-label={expanded ? `Collapse ${f.name}` : `Expand ${f.name}`}
-                              aria-expanded={expanded}
-                              className={`p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0 ${hasChildren ? '' : 'invisible'}`}
-                              tabIndex={hasChildren ? 0 : -1}
-                            >
-                              <ChevronRight size={14} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => toggleDecoyExpand(f.id)}
-                              title={hasChildren ? (expanded ? 'Collapse folder' : 'Expand folder') : 'Folder'}
-                              className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0"
-                            >
-                              <Folder size={15} className="text-zinc-500 shrink-0" />
-                              <span className="truncate">{f.name}</span>
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
-                        <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                        <td className="px-3 py-1 overflow-hidden">
-                          <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, folders: decoyMode.tree.folders.filter(x => x.id !== f.id), docs: decoyMode.tree.docs.filter(x => x.folderId !== f.id) }); setDecoyExpanded(s => { const n = new Set(s); n.delete(f.id); return n; }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
-                        </td>
-                      </tr>
-                    );
-                    if (expanded) {
-                      if (hasChildren) rows.push(...renderDecoyRows(f.id, depth + 1));
-                      else rows.push(<tr key={`${f.id}-empty`} className="border-b border-zinc-100 bg-zinc-50/30"><td colSpan={4} className="px-3 py-2"><div style={{ paddingLeft: (depth + 1) * 16 + 24 }} className="text-xs text-zinc-500">This folder is empty.</div></td></tr>);
-                    }
-                  }
-                  for (const d of docs) {
-                    rows.push(
-                      <tr key={d.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                        <td className="px-3 py-1 overflow-hidden">
-                          <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: depth * 16 }}>
-                            <span className="shrink-0 w-5 h-5" aria-hidden />
-                            <button onClick={() => { setDecoySearchQuery(''); openDecoyDoc(d.id); }} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 overflow-hidden">
-                              <FileText size={15} className="text-zinc-500 shrink-0" />
-                              <span className="truncate">{d.name}</span>
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
-                        <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                        <td className="px-3 py-1 overflow-hidden">
-                          <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, docs: decoyMode.tree.docs.filter(x => x.id !== d.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
-                        </td>
-                      </tr>
-                    );
-                  }
-                  return rows;
-                };
-                return (
-                  <>
-                    <div className="max-w-4xl mx-auto mt-4 mb-2 px-3 sm:px-0">
-                      <div className="relative">
-                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
-                        <input
-                          type="text"
-                          value={decoySearchQuery}
-                          onChange={e => setDecoySearchQuery(e.target.value)}
-                          placeholder="Search all folders and files..."
-                          className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
-                          aria-label="Search decoy folders and files"
-                        />
-                        {decoySearchQuery && (
-                          <button type="button" onClick={() => setDecoySearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
-                            <X size={14} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {dq ? (
-                      <div className="max-w-4xl mx-auto mb-4 border border-zinc-200 rounded-lg bg-white overflow-hidden">
-                        <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
-                          <span>{dFolderHits.length + dDocHits.length} results</span>
-                          {dFolderHits.length === 0 && dDocHits.length === 0 && <span>No matches</span>}
-                        </div>
-                        {(dFolderHits.length > 0 || dDocHits.length > 0) && (
-                          <div className="max-h-[60vh] overflow-auto">
-                            {dFolderHits.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
-                            {dFolderHits.map(f => (
-                              <button key={f.id} type="button" onClick={() => openDecoyFolderById(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
-                                <Folder size={15} className="text-zinc-500 shrink-0" />
-                                <span className="min-w-0 flex-1">
-                                  <span className="block truncate">{f.name}</span>
-                                  <span className="block text-[11px] text-zinc-400 truncate">{f.path}</span>
-                                </span>
-                              </button>
-                            ))}
-                            {dDocHits.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
-                            {dDocHits.map(d => (
-                              <button key={d.id} type="button" onClick={() => openDecoyDocHit(d.id, decoyMode.tree.docs.find(x => x.id === d.id)?.folderId ?? null)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
-                                <FileText size={15} className="text-zinc-400 shrink-0" />
-                                <span className="min-w-0 flex-1">
-                                  <span className="block truncate">{d.name}</span>
-                                  <span className="block text-[11px] text-zinc-400 truncate">{d.path}</span>
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <table className="w-full table-fixed text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-hidden">
-                        <thead>
-                          <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
-                            <th className="px-3 py-2 font-medium">Name</th>
-                            <th className="px-3 py-2 font-medium w-20">Type</th>
-                            <th className="px-3 py-2 font-medium w-24 hidden sm:table-cell">Size</th>
-                            <th className="px-2 py-2 font-medium w-20"></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr className="bg-zinc-100 border-b-2 border-zinc-300">
-                            <td className="px-3 py-1 overflow-hidden">
-                              <div className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 -mx-1 min-w-0">
-                                <button
-                                  type="button"
-                                  onClick={() => goCrumb(crumbs[Math.max(0, crumbs.length - 2)], Math.max(0, crumbs.length - 2))}
-                                  className="p-1 rounded text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 shrink-0"
-                                  aria-label="Go up one level"
-                                  title="Up one level"
-                                >
-                                  <Undo2 size={15} />
-                                </button>
-                                <nav aria-label="Folder path" className="flex items-center gap-0.5 min-w-0 flex-1 overflow-hidden text-sm">
-                                  {crumbs.map((c, i) => (
-                                    <span key={i} className="flex items-center gap-0.5 min-w-0 shrink">
-                                      {i > 0 && <ChevronRight size={12} className="text-zinc-400 shrink-0" />}
-                                      <button
-                                        type="button"
-                                        onClick={() => goCrumb(c, i)}
-                                        className={`truncate max-w-[10rem] px-0.5 py-0.5 rounded ${i === crumbs.length - 1 ? 'font-medium text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900'}`}
-                                        title={c.name}
-                                      >
-                                        {c.name}
-                                      </button>
-                                    </span>
-                                  ))}
-                                </nav>
-                              </div>
-                            </td>
-                            <td className="px-3 py-1 text-xs text-zinc-600 font-medium">Folder</td>
-                            <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">—</td>
-                            <td className="px-3 py-1 overflow-hidden"></td>
-                          </tr>
-                          {(() => {
-                            const rootId = decoyMode.folderId;
-                            const expanded = decoyExpanded.has(rootId);
-                            const hasChildren = decoyMode.tree.folders.some(f => f.parentId === null) || decoyMode.tree.docs.some(d => d.folderId === null);
-                            return (
-                              <>
-                                <tr className="border-b border-zinc-100 hover:bg-zinc-50">
-                                  <td className="px-3 py-1 overflow-hidden">
-                                    <div className="flex items-center gap-1 min-w-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleDecoyExpand(rootId)}
-                                        aria-label={expanded ? `Collapse ${decoyMode.tree.name}` : `Expand ${decoyMode.tree.name}`}
-                                        aria-expanded={expanded}
-                                        className="p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0"
-                                        tabIndex={0}
-                                      >
-                                        <ChevronRight size={14} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleDecoyExpand(rootId)}
-                                        title={expanded ? 'Collapse folder' : 'Expand folder'}
-                                        className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 overflow-hidden"
-                                      >
-                                        <Folder size={15} className="text-zinc-500 shrink-0" />
-                                        <span className="truncate">{decoyMode.tree.name}</span>
-                                      </button>
-                                    </div>
-                                  </td>
-                                  <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
-                                  <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                                  <td className="px-3 py-1 overflow-hidden"></td>
-                                </tr>
-                                {expanded && (hasChildren
-                                  ? renderDecoyRows(null, 1)
-                                  : <tr className="border-b border-zinc-100 bg-zinc-50/30"><td colSpan={4} className="px-3 py-2"><div style={{ paddingLeft: 16 + 24 }} className="text-xs text-zinc-500">This folder is empty.</div></td></tr>
-                                )}
-                              </>
-                            );
-                          })()}
-                        </tbody>
-                      </table>
-                    )}
-                    <div className="max-w-4xl mx-auto mt-2 mb-4 flex justify-start px-1">
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onClick={openPlusMenu}
-                          className="flex h-11 w-11 items-center justify-center rounded-full bg-zinc-900 text-white hover:bg-zinc-800 shadow-md"
-                          aria-label="Add"
-                          aria-haspopup="menu"
-                          aria-expanded={folderActionsOpen}
-                          title="Create in decoy"
-                        >
-                          <Plus size={20} />
-                        </button>
-                        {folderActionsOpen && plusMenuPos && (
-                          <>
-                            <button aria-hidden tabIndex={-1} onClick={closePlusMenu} className="fixed inset-0 z-30 cursor-default" />
-                            <div className="fixed z-40 w-48 border border-zinc-200 bg-white rounded-md shadow-lg py-1 max-h-[calc(100vh-16px)] overflow-auto" role="menu" style={{ top: plusMenuPos.top, bottom: plusMenuPos.bottom, left: plusMenuPos.left }}>
-                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, folders: [...decoyMode.tree.folders, { id: newDecoyId(), parentId: null, name: 'New folder' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
-                              <button onClick={async () => { closePlusMenu(); await persistDecoyTree({ ...decoyMode.tree, docs: [...decoyMode.tree.docs, { id: newDecoyId(), folderId: null, name: 'New document.txt', kind: 'txt', text: '' }] }); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New document</button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                );
-              })()}
             </div>
           ) : (
             <div>
