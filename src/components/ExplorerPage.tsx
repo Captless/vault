@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, Sun, Moon } from 'lucide-react';
+import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, Sun, Moon, FileCode2, FileJson2, FileImage, FileArchive, Film, Music2, FileType2 } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -19,6 +19,73 @@ import { getTheme, toggleTheme, type ThemeMode } from '../app/theme';
 type CreateKind = 'folder' | 'txt' | 'md';
 type DecoyDocDraft = { id: string; folderId: string | null; name: string; kind: 'txt' | 'md'; text: string };
 type DecoyFolderDraft = { id: string; name: string };
+
+const _thumbUrlCache = new Map<string, string>();
+function isImageViewFile(mime?: string, name?: string): boolean {
+  const m = (mime || '').toLowerCase();
+  if (m.startsWith('image/')) return true;
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  return ['png','jpg','jpeg','gif','webp','bmp','svg','avif','ico'].includes(ext);
+}
+function fileExt(name?: string) { return (name || '').split('.').pop()?.toLowerCase() || ''; }
+function getFileVisual(name?: string, mime?: string) {
+  const ext = fileExt(name); const m = (mime || '').toLowerCase();
+  if (isImageViewFile(mime, name)) return { Icon: FileImage, label: ext.toUpperCase() || 'IMG', cls: 'text-emerald-600 bg-emerald-50 border-emerald-200' };
+  if (ext === 'pdf' || m === 'application/pdf') return { Icon: FileType2, label: 'PDF', cls: 'text-red-600 bg-red-50 border-red-200' };
+  if (['md','markdown','mdx'].includes(ext)) return { Icon: FileText, label: 'MD', cls: 'text-sky-700 bg-sky-50 border-sky-200' };
+  if (['html','htm','xhtml'].includes(ext)) return { Icon: FileCode2, label: 'HTML', cls: 'text-orange-600 bg-orange-50 border-orange-200' };
+  if (['json','jsonc'].includes(ext) || m.includes('json')) return { Icon: FileJson2, label: 'JSON', cls: 'text-amber-700 bg-amber-50 border-amber-200' };
+  if (['js','jsx','ts','tsx','mjs','cjs','css','py','rb','go','rs','java','c','cpp','h','cs','php','sh','sql','yml','yaml','toml','xml'].includes(ext)) return { Icon: FileCode2, label: ext.toUpperCase().slice(0,4), cls: 'text-violet-700 bg-violet-50 border-violet-200' };
+  if (['txt','log','csv','tsv','ini','conf','env'].includes(ext) || m.startsWith('text/')) return { Icon: FileText, label: (ext||'TXT').toUpperCase().slice(0,4), cls: 'text-zinc-700 bg-zinc-100 border-zinc-200' };
+  if (['zip','rar','7z','tar','gz','bz2','xz'].includes(ext)) return { Icon: FileArchive, label: ext.toUpperCase(), cls: 'text-yellow-700 bg-yellow-50 border-yellow-200' };
+  if (['mp4','mov','webm','mkv','avi'].includes(ext) || m.startsWith('video/')) return { Icon: Film, label: (ext||'VID').toUpperCase().slice(0,4), cls: 'text-fuchsia-700 bg-fuchsia-50 border-fuchsia-200' };
+  if (['mp3','wav','ogg','m4a','flac'].includes(ext) || m.startsWith('audio/')) return { Icon: Music2, label: (ext||'AUD').toUpperCase().slice(0,4), cls: 'text-pink-700 bg-pink-50 border-pink-200' };
+  return { Icon: File, label: (ext||'FILE').toUpperCase().slice(0,4), cls: 'text-zinc-600 bg-zinc-100 border-zinc-200' };
+}
+function ImageThumb({ itemId, name, mime, className }: { itemId: string; name?: string; mime?: string; className?: string }) {
+  const [src, setSrc] = useState<string | null>(() => _thumbUrlCache.get(itemId) || null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    if (!isImageViewFile(mime, name)) return;
+    const cached = _thumbUrlCache.get(itemId);
+    if (cached) { setSrc(cached); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const it = await db.items.get(itemId);
+        if (!it || cancelled) return;
+        const { bytes, mime: m } = await readFileItem(it);
+        if (cancelled) return;
+        let blob: Blob = new Blob([bytes as BlobPart], { type: m || 'application/octet-stream' });
+        try {
+          if (typeof createImageBitmap === 'function' && !(m || '').includes('svg')) {
+            const bmp = await createImageBitmap(blob, { resizeWidth: 128, resizeHeight: 128, resizeQuality: 'medium' } as any).catch(() => null);
+            if (bmp) {
+              const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+              const ctx = c.getContext('2d'); ctx?.drawImage(bmp, 0, 0);
+              bmp.close?.();
+              const b = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', 0.82));
+              if (b) blob = b;
+            }
+          }
+        } catch { /* use original */ }
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        _thumbUrlCache.set(itemId, url);
+        setSrc(url);
+      } catch { if (!cancelled) setErr(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [itemId, name, mime]);
+  if (src && !err) return <img src={src} alt="" className={className} loading="lazy" decoding="async" />;
+  const v = getFileVisual(name, mime); const Icon = v.Icon;
+  return <div className={`${className || ''} flex items-center justify-center border ${v.cls}`}><Icon size={14} /></div>;
+}
+function FileVisual({ itemId, name, mime, kind, className }: { itemId: string; name?: string; mime?: string; kind?: string; className?: string }) {
+  if (kind === 'file' && isImageViewFile(mime, name)) return <ImageThumb itemId={itemId} name={name} mime={mime} className={className} />;
+  const v = getFileVisual(name, mime); const Icon = v.Icon;
+  return <div className={`${className || ''} flex items-center justify-center border ${v.cls}`} title={v.label}><Icon size={14} /></div>;
+}
 
 export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const nav = useNavigate();
@@ -411,6 +478,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   function toggleImageZoom() {
     setViewerScale(s => (s > 1 ? 1 : 2.25));
     setViewerPan({ x: 0, y: 0 });
+  }
+  function zoomBy(delta: number) {
+    setViewerScale(s => {
+      const next = Math.max(1, Math.min(5, Number((s + delta).toFixed(2))));
+      if (next <= 1) setViewerPan({ x: 0, y: 0 });
+      return next;
+    });
   }
 
   function clampViewerPan(x: number, y: number, scale: number) {
@@ -978,7 +1052,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                       className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
                       title={it.name}
                     >
-                      {it.kind === 'txt' || it.kind === 'md' ? <FileText size={12} className="shrink-0 text-zinc-400" /> : <File size={12} className="shrink-0 text-zinc-400" />}
+                      {(() => { const V = getFileVisual(it.name, it.mime).Icon; return <V size={12} className="shrink-0 text-zinc-400" />; })()}
                       <span className="truncate">{it.name}</span>
                       {it.size ? <span className="ml-auto shrink-0 text-[10px] text-zinc-400 tabular-nums">{fmtSize(it.size)}</span> : null}
                     </button>
@@ -1403,22 +1477,22 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               <span className="shrink-0 w-5 h-5" aria-hidden />
                               {it.kind === 'file' && getViewKind(it.mime, it.name) ? (
                                 <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
                               ) : getTextEditKind(it.kind, it.name, it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <FileText size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
                               ) : it.kind === 'file' ? (
                                 <button onClick={() => void downloadItem(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 hover:underline">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
                               ) : (
                                 <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </span>
                               )}
@@ -1475,7 +1549,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
                 title={it.name}
               >
-                {it.kind === 'txt' || it.kind === 'md' ? <FileText size={12} className="shrink-0 text-zinc-400" /> : <File size={12} className="shrink-0 text-zinc-400" />}
+                {(() => { const V = getFileVisual(it.name, it.mime).Icon; return <V size={12} className="shrink-0 text-zinc-400" />; })()}
                 <span className="truncate">{it.name}</span>
                 {it.size ? <span className="ml-auto shrink-0 text-[10px] text-zinc-400 tabular-nums">{fmtSize(it.size)}</span> : null}
               </button>
@@ -1602,58 +1676,61 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             </div>
           ) : (
             <div>
-              <div className="max-w-4xl mx-auto mt-4 mb-2 px-3 sm:px-0">
-                <div className="relative">
-                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    placeholder="Search all folders and files..."
-                    className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
-                    aria-label="Search all folders and files"
-                  />
-                  {searchQuery && (
-                    <button type="button" onClick={() => { setSearchQuery(''); setSearchResults(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
-                      <X size={14} />
-                    </button>
-                  )}
-                </div>
-              </div>
-              {searchQuery.trim() ? (
-                <div className="max-w-4xl mx-auto mb-4 border border-zinc-200 rounded-lg bg-white overflow-hidden">
-                  <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
-                    <span>{searchBusy ? 'Searching…' : `${(searchResults?.folders.length ?? 0) + (searchResults?.items.length ?? 0)} results`}</span>
-                    {!searchBusy && searchResults && searchResults.folders.length === 0 && searchResults.items.length === 0 && <span>No matches</span>}
+              <div className="sticky top-0 z-20 pt-3 pb-2 px-3 sm:px-0 bg-[color:var(--app-bg,#f4f4f5)]/95 backdrop-blur supports-[backdrop-filter]:bg-[color:var(--app-bg,#f4f4f5)]/85">
+                <div className="max-w-4xl mx-auto">
+                  <div className="relative">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search all folders and files..."
+                      className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white/95 focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                      aria-label="Search all folders and files"
+                    />
+                    {searchQuery && (
+                      <button type="button" onClick={() => { setSearchQuery(''); setSearchResults(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
-                  {!searchBusy && searchResults && (searchResults.folders.length > 0 || searchResults.items.length > 0) && (
-                    <div className="max-h-[60vh] overflow-auto">
-                      {searchResults.folders.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
-                      {searchResults.folders.map(f => (
-                        <button key={f.id} type="button" onClick={() => void goToSearchFolder(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
-                          <Folder size={15} className="text-zinc-500 shrink-0" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate">{f.name}</span>
-                            <span className="block text-[11px] text-zinc-400 truncate">{f.path}{f.locked ? ' · locked' : ''}</span>
-                          </span>
-                          {f.locked && <Lock size={12} className="text-zinc-400 shrink-0" />}
-                        </button>
-                      ))}
-                      {searchResults.items.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
-                      {searchResults.items.map(it => (
-                        <button key={it.id} type="button" onClick={() => void goToSearchItem(it)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
-                          {it.kind === 'txt' || it.kind === 'md' ? <FileText size={15} className="text-zinc-400 shrink-0" /> : <File size={15} className="text-zinc-400 shrink-0" />}
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate">{it.name}</span>
-                            <span className="block text-[11px] text-zinc-400 truncate">{it.path}</span>
-                          </span>
-                          <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{fmtSize(it.size)}</span>
-                        </button>
-                      ))}
+                  {searchQuery.trim() && (
+                    <div className="mt-2 border border-zinc-200 rounded-lg bg-white overflow-hidden shadow-sm">
+                      <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
+                        <span>{searchBusy ? 'Searching...' : `${(searchResults?.folders.length ?? 0) + (searchResults?.items.length ?? 0)} results`}</span>
+                        {!searchBusy && searchResults && searchResults.folders.length === 0 && searchResults.items.length === 0 && <span>No matches</span>}
+                      </div>
+                      {!searchBusy && searchResults && (searchResults.folders.length > 0 || searchResults.items.length > 0) && (
+                        <div className="max-h-[50vh] sm:max-h-[60vh] overflow-auto">
+                          {searchResults.folders.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
+                          {searchResults.folders.map(f => (
+                            <button key={f.id} type="button" onClick={() => void goToSearchFolder(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                              <Folder size={15} className="text-zinc-500 shrink-0" />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{f.name}</span>
+                                <span className="block text-[11px] text-zinc-400 truncate">{f.path}{f.locked ? ' · locked' : ''}</span>
+                              </span>
+                              {f.locked && <Lock size={12} className="text-zinc-400 shrink-0" />}
+                            </button>
+                          ))}
+                          {searchResults.items.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
+                          {searchResults.items.map(it => (
+                            <button key={it.id} type="button" onClick={() => void goToSearchItem(it)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                              {(() => { const V = getFileVisual(it.name, it.mime).Icon; return <V size={15} className="text-zinc-400 shrink-0" />; })()}
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{it.name}</span>
+                                <span className="block text-[11px] text-zinc-400 truncate">{it.path}</span>
+                              </span>
+                              <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{fmtSize(it.size)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              ) : (
+              </div>
+              {!searchQuery.trim() && (
               <>
               <div className="max-w-4xl mx-auto mt-0 mb-2 h-10">
                 {selectedCount > 0 && (
@@ -1777,22 +1854,22 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               <span className="shrink-0 w-5 h-5" aria-hidden />
                               {it.kind === 'file' && getViewKind(it.mime, names[it.id]) ? (
                                 <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
                               ) : getTextEditKind(it.kind, names[it.id], it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <FileText size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
                               ) : it.kind === 'file' ? (
                                 <button onClick={() => void downloadItem(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 hover:underline">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
                               ) : (
                                 <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </span>
                               )}
@@ -2140,7 +2217,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3 min-w-0">
                 <div className="min-w-0">
-                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Click to zoom · drag when zoomed</p>}
+                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Tap/double-tap or use controls to zoom</p>}
                 </div>
                 {viewer.url && <a href={viewer.url} download={viewer.name} className="shrink-0 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
               </div>
@@ -2160,14 +2237,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   }}
                   onPointerDown={(e) => {
                     viewerMovedRef.current = false;
-                    if (viewerScale <= 1) {
-                      if (e.pointerType === 'touch') {
-                        const now = Date.now();
-                        if (now - viewerLastTapRef.current < 300) { e.preventDefault(); viewerLastTapRef.current = 0; toggleImageZoom(); return; }
-                        viewerLastTapRef.current = now;
-                      }
-                      return;
+                    if (e.pointerType === 'touch') {
+                      const now = Date.now();
+                      if (now - viewerLastTapRef.current < 300) { e.preventDefault(); viewerLastTapRef.current = 0; toggleImageZoom(); return; }
+                      viewerLastTapRef.current = now;
                     }
+                    if (viewerScale <= 1) return;
                     e.preventDefault();
                     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
                     viewerDragRef.current = { x: viewerPan.x, y: viewerPan.y, px: e.clientX, py: e.clientY };
@@ -2202,7 +2277,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); const i = (viewer.imageIndex + 1) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 z-20 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={20} aria-hidden="true" /></button>
                   </>
                 )}
-                {viewerScale > 1 && <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · click to reset</div>}
+                {viewerScale > 1 && <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · double-tap or − to zoom out</div>}
+                <div className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-lg bg-white/95 shadow-md ring-1 ring-zinc-900/10 p-1" onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+                  <button type="button" onClick={() => zoomBy(-0.5)} disabled={viewerScale <= 1} aria-label="Zoom out" className="h-8 w-8 grid place-items-center rounded-md text-zinc-700 hover:bg-zinc-100 disabled:opacity-40">−</button>
+                  <button type="button" onClick={resetViewerTransform} aria-label="Reset zoom" className="h-8 min-w-10 px-1.5 text-[11px] font-medium rounded-md text-zinc-700 hover:bg-zinc-100 tabular-nums">{Math.round(viewerScale * 100)}%</button>
+                  <button type="button" onClick={() => zoomBy(0.5)} aria-label="Zoom in" className="h-8 w-8 grid place-items-center rounded-md text-zinc-700 hover:bg-zinc-100">+</button>
+                </div>
               </div>
             </div>
           ) : (
