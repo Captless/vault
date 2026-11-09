@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, Sun, Moon } from 'lucide-react';
+import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, Sun, Moon, FileCode2, FileJson2, FileImage, FileArchive, Film, Music2, FileType2 } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -19,6 +19,73 @@ import { getTheme, toggleTheme, type ThemeMode } from '../app/theme';
 type CreateKind = 'folder' | 'txt' | 'md';
 type DecoyDocDraft = { id: string; folderId: string | null; name: string; kind: 'txt' | 'md'; text: string };
 type DecoyFolderDraft = { id: string; name: string };
+
+const _thumbUrlCache = new Map<string, string>();
+function isImageViewFile(mime?: string, name?: string): boolean {
+  const m = (mime || '').toLowerCase();
+  if (m.startsWith('image/')) return true;
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  return ['png','jpg','jpeg','gif','webp','bmp','svg','avif','ico'].includes(ext);
+}
+function fileExt(name?: string) { return (name || '').split('.').pop()?.toLowerCase() || ''; }
+function getFileVisual(name?: string, mime?: string) {
+  const ext = fileExt(name); const m = (mime || '').toLowerCase();
+  if (isImageViewFile(mime, name)) return { Icon: FileImage, label: ext.toUpperCase() || 'IMG', cls: 'text-emerald-600 bg-emerald-50 border-emerald-200' };
+  if (ext === 'pdf' || m === 'application/pdf') return { Icon: FileType2, label: 'PDF', cls: 'text-red-600 bg-red-50 border-red-200' };
+  if (['md','markdown','mdx'].includes(ext)) return { Icon: FileText, label: 'MD', cls: 'text-sky-700 bg-sky-50 border-sky-200' };
+  if (['html','htm','xhtml'].includes(ext)) return { Icon: FileCode2, label: 'HTML', cls: 'text-orange-600 bg-orange-50 border-orange-200' };
+  if (['json','jsonc'].includes(ext) || m.includes('json')) return { Icon: FileJson2, label: 'JSON', cls: 'text-amber-700 bg-amber-50 border-amber-200' };
+  if (['js','jsx','ts','tsx','mjs','cjs','css','py','rb','go','rs','java','c','cpp','h','cs','php','sh','sql','yml','yaml','toml','xml'].includes(ext)) return { Icon: FileCode2, label: ext.toUpperCase().slice(0,4), cls: 'text-violet-700 bg-violet-50 border-violet-200' };
+  if (['txt','log','csv','tsv','ini','conf','env'].includes(ext) || m.startsWith('text/')) return { Icon: FileText, label: (ext||'TXT').toUpperCase().slice(0,4), cls: 'text-zinc-700 bg-zinc-100 border-zinc-200' };
+  if (['zip','rar','7z','tar','gz','bz2','xz'].includes(ext)) return { Icon: FileArchive, label: ext.toUpperCase(), cls: 'text-yellow-700 bg-yellow-50 border-yellow-200' };
+  if (['mp4','mov','webm','mkv','avi'].includes(ext) || m.startsWith('video/')) return { Icon: Film, label: (ext||'VID').toUpperCase().slice(0,4), cls: 'text-fuchsia-700 bg-fuchsia-50 border-fuchsia-200' };
+  if (['mp3','wav','ogg','m4a','flac'].includes(ext) || m.startsWith('audio/')) return { Icon: Music2, label: (ext||'AUD').toUpperCase().slice(0,4), cls: 'text-pink-700 bg-pink-50 border-pink-200' };
+  return { Icon: File, label: (ext||'FILE').toUpperCase().slice(0,4), cls: 'text-zinc-600 bg-zinc-100 border-zinc-200' };
+}
+function ImageThumb({ itemId, name, mime, className }: { itemId: string; name?: string; mime?: string; className?: string }) {
+  const [src, setSrc] = useState<string | null>(() => _thumbUrlCache.get(itemId) || null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    if (!isImageViewFile(mime, name)) return;
+    const cached = _thumbUrlCache.get(itemId);
+    if (cached) { setSrc(cached); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const it = await db.items.get(itemId);
+        if (!it || cancelled) return;
+        const { bytes, mime: m } = await readFileItem(it);
+        if (cancelled) return;
+        let blob: Blob = new Blob([bytes as BlobPart], { type: m || 'application/octet-stream' });
+        try {
+          if (typeof createImageBitmap === 'function' && !(m || '').includes('svg')) {
+            const bmp = await createImageBitmap(blob, { resizeWidth: 128, resizeHeight: 128, resizeQuality: 'medium' } as any).catch(() => null);
+            if (bmp) {
+              const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+              const ctx = c.getContext('2d'); ctx?.drawImage(bmp, 0, 0);
+              bmp.close?.();
+              const b = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', 0.82));
+              if (b) blob = b;
+            }
+          }
+        } catch { /* use original */ }
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        _thumbUrlCache.set(itemId, url);
+        setSrc(url);
+      } catch { if (!cancelled) setErr(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [itemId, name, mime]);
+  if (src && !err) return <img src={src} alt="" className={className} loading="lazy" decoding="async" />;
+  const v = getFileVisual(name, mime); const Icon = v.Icon;
+  return <div className={`${className || ''} flex items-center justify-center border ${v.cls}`}><Icon size={14} /></div>;
+}
+function FileVisual({ itemId, name, mime, kind, className }: { itemId: string; name?: string; mime?: string; kind?: string; className?: string }) {
+  if (kind === 'file' && isImageViewFile(mime, name)) return <ImageThumb itemId={itemId} name={name} mime={mime} className={className} />;
+  const v = getFileVisual(name, mime); const Icon = v.Icon;
+  return <div className={`${className || ''} flex items-center justify-center border ${v.cls}`} title={v.label}><Icon size={14} /></div>;
+}
 
 export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const nav = useNavigate();
@@ -978,7 +1045,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                       className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
                       title={it.name}
                     >
-                      {it.kind === 'txt' || it.kind === 'md' ? <FileText size={12} className="shrink-0 text-zinc-400" /> : <File size={12} className="shrink-0 text-zinc-400" />}
+                      {(() => { const V = getFileVisual(it.name, it.mime).Icon; return <V size={12} className="shrink-0 text-zinc-400" />; })()}
                       <span className="truncate">{it.name}</span>
                       {it.size ? <span className="ml-auto shrink-0 text-[10px] text-zinc-400 tabular-nums">{fmtSize(it.size)}</span> : null}
                     </button>
@@ -1403,22 +1470,22 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               <span className="shrink-0 w-5 h-5" aria-hidden />
                               {it.kind === 'file' && getViewKind(it.mime, it.name) ? (
                                 <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
                               ) : getTextEditKind(it.kind, it.name, it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <FileText size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
                               ) : it.kind === 'file' ? (
                                 <button onClick={() => void downloadItem(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 hover:underline">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
                               ) : (
                                 <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={it.name} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{it.name}</span>
                                 </span>
                               )}
@@ -1475,7 +1542,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
                 title={it.name}
               >
-                {it.kind === 'txt' || it.kind === 'md' ? <FileText size={12} className="shrink-0 text-zinc-400" /> : <File size={12} className="shrink-0 text-zinc-400" />}
+                {(() => { const V = getFileVisual(it.name, it.mime).Icon; return <V size={12} className="shrink-0 text-zinc-400" />; })()}
                 <span className="truncate">{it.name}</span>
                 {it.size ? <span className="ml-auto shrink-0 text-[10px] text-zinc-400 tabular-nums">{fmtSize(it.size)}</span> : null}
               </button>
@@ -1777,22 +1844,22 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                               <span className="shrink-0 w-5 h-5" aria-hidden />
                               {it.kind === 'file' && getViewKind(it.mime, names[it.id]) ? (
                                 <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
                               ) : getTextEditKind(it.kind, names[it.id], it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
-                                  <FileText size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
                               ) : it.kind === 'file' ? (
                                 <button onClick={() => void downloadItem(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 hover:underline">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
                               ) : (
                                 <span className="flex items-center gap-2 py-1.5 px-1 min-w-0">
-                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <FileVisual itemId={it.id} name={names[it.id]} mime={it.mime} kind={it.kind} className="h-6 w-6 rounded shrink-0 overflow-hidden" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </span>
                               )}
