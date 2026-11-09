@@ -330,7 +330,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       tree = { name: 'Folder', folders: [], docs };
     }
     setDecoyMode({ folderId, tree, subId: null });
-    setCrumbs([{ id: null, name: 'All' }, { id: null, name: tree.name }]);
+    setCrumbs([{ id: null, name: 'All' }]);
     return true;
   }
 
@@ -636,13 +636,10 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     if (decoyMode) {
       setDecoySearchQuery('');
       setDecoyEditingId(null);
-      if (idx === 0) {
+      if (idx <= 0) {
         setDecoyMode(null);
         setCrumbs([{ id: null, name: 'All' }]);
         setParentId(null);
-      } else if (idx === 1) {
-        setDecoyMode(m => m ? { ...m, subId: null } : m);
-        setCrumbs(prev => prev.slice(0, idx + 1));
       }
       return;
     }
@@ -774,7 +771,6 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   // Decoy view (expand/collapse, no drill-down; contents collapsed by default)
-  const decoyHasRootContent = decoyMode ? (decoyMode.tree.folders.some(f => f.parentId === null) || decoyMode.tree.docs.some(d => d.folderId === null)) : false;
 
   const selectableTop = decoyMode ? [] : [
     ...(treeChildren.get(parentId) ?? []).map(f => ({ id: f.id, type: 'folder' as const })),
@@ -1239,22 +1235,22 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 const dDocHits = dq ? decoyMode.tree.docs.filter(d => d.name.toLowerCase().includes(dq)).map(d => ({ id: d.id, name: d.name, kind: d.kind, path: decoyFolderPath(d.folderId) })) : [];
                 const openDecoyFolderById = (folderId: string) => {
                   setDecoySearchQuery('');
-                  const chain: string[] = [folderId];
+                  const chain: string[] = [decoyMode.folderId, folderId];
                   let cur = decoyMode.tree.folders.find(f => f.id === folderId);
                   while (cur?.parentId) { chain.unshift(cur.parentId); cur = decoyMode.tree.folders.find(f => f.id === cur!.parentId); }
                   setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
-                  setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }]);
+                  setCrumbs([{ id: null, name: 'All' }]);
                   setDecoyMode(m => m ? { ...m, subId: null } : m);
                 };
                 const openDecoyDocHit = (docId: string, folderId: string | null) => {
                   setDecoySearchQuery('');
+                  const chain: string[] = [decoyMode.folderId];
                   if (folderId) {
-                    const chain: string[] = [];
                     let cur = decoyMode.tree.folders.find(f => f.id === folderId);
                     while (cur) { chain.unshift(cur.id); cur = cur.parentId ? decoyMode.tree.folders.find(f => f.id === cur!.parentId) : undefined; }
-                    setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
                   }
-                  setCrumbs([{ id: null, name: 'All' }, { id: null, name: decoyMode.tree.name }]);
+                  setDecoyExpanded(s => { const n = new Set(s); for (const id of chain) n.add(id); return n; });
+                  setCrumbs([{ id: null, name: 'All' }]);
                   setDecoyMode(m => m ? { ...m, subId: null } : m);
                   openDecoyDoc(docId);
                 };
@@ -1420,10 +1416,47 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">—</td>
                             <td className="px-3 py-1 overflow-hidden"></td>
                           </tr>
-                          {renderDecoyRows(null, 0)}
-                          {!decoyHasRootContent && (
-                            <tr><td colSpan={4} className="px-3 py-10 text-center text-sm text-zinc-500">This folder is empty. Create or upload to get started.</td></tr>
-                          )}
+                          {(() => {
+                            const rootId = decoyMode.folderId;
+                            const expanded = decoyExpanded.has(rootId);
+                            const hasChildren = decoyMode.tree.folders.some(f => f.parentId === null) || decoyMode.tree.docs.some(d => d.folderId === null);
+                            return (
+                              <>
+                                <tr className="border-b border-zinc-100 hover:bg-zinc-50">
+                                  <td className="px-3 py-1 overflow-hidden">
+                                    <div className="flex items-center gap-1 min-w-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleDecoyExpand(rootId)}
+                                        aria-label={expanded ? `Collapse ${decoyMode.tree.name}` : `Expand ${decoyMode.tree.name}`}
+                                        aria-expanded={expanded}
+                                        className="p-0.5 rounded text-zinc-400 hover:text-zinc-900 shrink-0"
+                                        tabIndex={0}
+                                      >
+                                        <ChevronRight size={14} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleDecoyExpand(rootId)}
+                                        title={expanded ? 'Collapse folder' : 'Expand folder'}
+                                        className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 overflow-hidden"
+                                      >
+                                        <Folder size={15} className="text-zinc-500 shrink-0" />
+                                        <span className="truncate">{decoyMode.tree.name}</span>
+                                      </button>
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
+                                  <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
+                                  <td className="px-3 py-1 overflow-hidden"></td>
+                                </tr>
+                                {expanded && (hasChildren
+                                  ? renderDecoyRows(null, 1)
+                                  : <tr className="border-b border-zinc-100 bg-zinc-50/30"><td colSpan={4} className="px-3 py-2"><div style={{ paddingLeft: 16 + 24 }} className="text-xs text-zinc-500">This folder is empty.</div></td></tr>
+                                )}
+                              </>
+                            );
+                          })()}
                         </tbody>
                       </table>
                     )}
