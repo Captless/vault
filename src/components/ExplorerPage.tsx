@@ -101,6 +101,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const viewerUrlRef = useRef<string | null>(null);
   const viewerStageRef = useRef<HTMLDivElement>(null);
   const viewerDragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const viewerMovedRef = useRef(false);
   const viewerLastTapRef = useRef(0);
   useEffect(() => () => { if (viewerUrlRef.current) URL.revokeObjectURL(viewerUrlRef.current); }, []);
 
@@ -1906,7 +1907,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </div>
       </Dialog>
 
-      <Dialog open={!!lockTarget} onClose={() => { setLockTarget(null); resetLockWizard(); }} title={lockStep === 1 ? `Lock ${lockTarget?.name || ''}` : 'Decoy (optional)'} width="28rem">
+      <Dialog open={!!lockTarget} onClose={() => { setLockTarget(null); resetLockWizard(); }} title={lockStep === 1 ? `Lock ${lockTarget?.name || ''}` : 'Decoy'} width="28rem">
         {lockStep === 1 ? (
           <div className="space-y-4">
             <div>
@@ -1942,13 +1943,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             ) : (
               <>
                 <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 cursor-pointer hover:bg-zinc-50">
-                  <span className="text-sm text-zinc-800">Show decoy on wrong password</span>
+                  <span className="text-sm text-zinc-800">Use decoy</span>
                   <input type="checkbox" checked={decoyEnabled} onChange={e => setDecoyEnabled(e.target.checked)} className="h-4 w-4 rounded border-zinc-300" />
                 </label>
                 {decoyEnabled && (
                   <div className="space-y-3 rounded-md border border-zinc-200 p-3 bg-zinc-50/50">
                     <div>
-                      <label htmlFor="decoy-root-name" className="block text-xs font-medium text-zinc-600 mb-1">Decoy name <span className="font-normal text-zinc-400">(optional)</span></label>
+                      <label htmlFor="decoy-root-name" className="block text-xs font-medium text-zinc-600 mb-1">Name</label>
                       <input id="decoy-root-name" value={decoyName} onChange={e => setDecoyName(e.target.value)} placeholder="Notes" className="w-full border border-zinc-300 rounded-md px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" />
                     </div>
                     <div className="flex gap-2">
@@ -2079,7 +2080,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3 min-w-0">
                 <div className="min-w-0">
-                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Double-click or double-tap to zoom</p>}
+                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Click to zoom · drag when zoomed</p>}
                 </div>
                 {viewer.url && <a href={viewer.url} download={viewer.name} className="shrink-0 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
               </div>
@@ -2089,9 +2090,16 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 style={{ height: 'min(72vh, 42rem)' }}
               >
                 <div
-                  className="absolute inset-0 flex items-center justify-center p-2 sm:p-4"
-                  onDoubleClick={toggleImageZoom}
+                  className="absolute inset-0 z-0 flex items-center justify-center p-2 sm:p-4"
+                  onClick={(e) => {
+                    if (viewerMovedRef.current) { viewerMovedRef.current = false; return; }
+                    const coarse = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)')?.matches;
+                    if (coarse) return; // touch uses double-tap
+                    if (e.detail > 1) return;
+                    toggleImageZoom();
+                  }}
                   onPointerDown={(e) => {
+                    viewerMovedRef.current = false;
                     if (viewerScale <= 1) {
                       if (e.pointerType === 'touch') {
                         const now = Date.now();
@@ -2108,16 +2116,17 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     if (!viewerDragRef.current || viewerScale <= 1) return;
                     const dx = e.clientX - viewerDragRef.current.px;
                     const dy = e.clientY - viewerDragRef.current.py;
+                    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) viewerMovedRef.current = true;
                     setViewerPan(clampViewerPan(viewerDragRef.current.x + dx, viewerDragRef.current.y + dy, viewerScale));
                   }}
                   onPointerUp={() => { viewerDragRef.current = null; }}
                   onPointerCancel={() => { viewerDragRef.current = null; }}
-                  style={{ cursor: viewerScale > 1 ? 'grab' : 'zoom-in' }}
+                  style={{ cursor: viewerScale > 1 ? (viewerDragRef.current ? 'grabbing' : 'grab') : 'zoom-in' }}
                   tabIndex={0}
                   role="button"
                   aria-pressed={viewerScale > 1}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleImageZoom(); } }}
-                  aria-label={`${viewer.name}. ${viewerScale > 1 ? 'Zoomed. Press Enter to reset, drag to move.' : 'Press Enter or double tap to zoom.'}`}
+                  aria-label={`${viewer.name}. ${viewerScale > 1 ? 'Zoomed. Drag to move, click to reset.' : 'Click to zoom.'}`}
                 >
                   <img
                     src={viewer.url}
@@ -2129,11 +2138,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 </div>
                 {viewer.images.length > 1 && (
                   <>
-                    <button type="button" onClick={() => { const i = (viewer.imageIndex - 1 + viewer.images.length) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Previous image" className="absolute left-2 sm:left-3 top-1/2 -translate-y-1/2 z-10 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronLeft size={20} aria-hidden="true" /></button>
-                    <button type="button" onClick={() => { const i = (viewer.imageIndex + 1) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 z-10 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={20} aria-hidden="true" /></button>
+                    <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); const i = (viewer.imageIndex - 1 + viewer.images.length) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Previous image" className="absolute left-2 sm:left-3 top-1/2 -translate-y-1/2 z-20 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronLeft size={20} aria-hidden="true" /></button>
+                    <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); const i = (viewer.imageIndex + 1) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 z-20 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={20} aria-hidden="true" /></button>
                   </>
                 )}
-                {viewerScale > 1 && <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · Double tap to reset</div>}
+                {viewerScale > 1 && <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · click to reset</div>}
               </div>
             </div>
           ) : (
