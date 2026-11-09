@@ -479,6 +479,13 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setViewerScale(s => (s > 1 ? 1 : 2.25));
     setViewerPan({ x: 0, y: 0 });
   }
+  function zoomBy(delta: number) {
+    setViewerScale(s => {
+      const next = Math.max(1, Math.min(5, Number((s + delta).toFixed(2))));
+      if (next <= 1) setViewerPan({ x: 0, y: 0 });
+      return next;
+    });
+  }
 
   function clampViewerPan(x: number, y: number, scale: number) {
     if (scale <= 1) return { x: 0, y: 0 };
@@ -2210,7 +2217,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3 min-w-0">
                 <div className="min-w-0">
-                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Click to zoom · drag when zoomed</p>}
+                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Tap/double-tap or use controls to zoom</p>}
                 </div>
                 {viewer.url && <a href={viewer.url} download={viewer.name} className="shrink-0 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
               </div>
@@ -2230,14 +2237,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   }}
                   onPointerDown={(e) => {
                     viewerMovedRef.current = false;
-                    if (viewerScale <= 1) {
-                      if (e.pointerType === 'touch') {
-                        const now = Date.now();
-                        if (now - viewerLastTapRef.current < 300) { e.preventDefault(); viewerLastTapRef.current = 0; toggleImageZoom(); return; }
-                        viewerLastTapRef.current = now;
-                      }
-                      return;
+                    if (e.pointerType === 'touch') {
+                      const now = Date.now();
+                      if (now - viewerLastTapRef.current < 300) { e.preventDefault(); viewerLastTapRef.current = 0; toggleImageZoom(); return; }
+                      viewerLastTapRef.current = now;
                     }
+                    if (viewerScale <= 1) return;
                     e.preventDefault();
                     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
                     viewerDragRef.current = { x: viewerPan.x, y: viewerPan.y, px: e.clientX, py: e.clientY };
@@ -2272,7 +2277,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); const i = (viewer.imageIndex + 1) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 z-20 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={20} aria-hidden="true" /></button>
                   </>
                 )}
-                {viewerScale > 1 && <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · click to reset</div>}
+                {viewerScale > 1 && <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-20 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · double-tap or − to zoom out</div>}
+                <div className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-lg bg-white/95 shadow-md ring-1 ring-zinc-900/10 p-1" onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+                  <button type="button" onClick={() => zoomBy(-0.5)} disabled={viewerScale <= 1} aria-label="Zoom out" className="h-8 w-8 grid place-items-center rounded-md text-zinc-700 hover:bg-zinc-100 disabled:opacity-40">−</button>
+                  <button type="button" onClick={resetViewerTransform} aria-label="Reset zoom" className="h-8 min-w-10 px-1.5 text-[11px] font-medium rounded-md text-zinc-700 hover:bg-zinc-100 tabular-nums">{Math.round(viewerScale * 100)}%</button>
+                  <button type="button" onClick={() => zoomBy(0.5)} aria-label="Zoom in" className="h-8 w-8 grid place-items-center rounded-md text-zinc-700 hover:bg-zinc-100">+</button>
+                </div>
               </div>
             </div>
           ) : (
