@@ -89,6 +89,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [decoyCreateTarget, setDecoyCreateTarget] = useState<{ rootId: string; parentId: string | null } | null>(null);
   const uploadHereRef = useRef<HTMLInputElement>(null);
   const [uploadTargetId, setUploadTargetId] = useState<string | null>(null);
+  const decoyUploadRef = useRef<HTMLInputElement>(null);
+  const decoyEditUploadRef = useRef<HTMLInputElement>(null);
   // Inline unlock for locked folders (expand/collapse model, no navigation)
   const [inlineUnlockId, setInlineUnlockId] = useState<string | null>(null);
   // File viewer (images, PDFs)
@@ -466,18 +468,28 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       let it = items.find(x => x.id === id) || null;
       if (!it) it = (await db.items.get(id)) || null;
       if (!it) throw new Error('File not found');
-      const imageSiblings = items.filter(x => x.parentId === it.parentId && getViewKind(x.mime, names[x.id] || '') === 'image');
-      const images: ViewerImage[] = Array.from(new Map(imageSiblings.map(x => [x.id, x])).values()).map(x => ({ id: x.id, name: names[x.id] || 'Image', mime: x.mime || '' }));
-      if (getViewKind(it.mime, names[it.id] || '') === 'image' && !images.some(x => x.id === id)) images.push({ id, name: names[it.id] || 'Image', mime: it.mime || '' });
-      images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-      const imageIndex = Math.max(0, images.findIndex(x => x.id === id));
       const { bytes, mime, name } = await readFileItem(it);
       const kind = getViewKind(mime, name);
       if (!kind) throw new Error('This file type cannot be previewed');
+      let images: ViewerImage[] = [];
+      let imageIndex = 0;
+      if (kind === 'image') {
+        const siblings = await listItems(it.parentId);
+        const candidates = siblings.filter(x => x.kind === 'file' && x.id !== id && getViewKind(x.mime, '') === 'image');
+        const metas = await Promise.all(candidates.map(async (x) => {
+          try { const m = await getItemMeta(x); return { id: x.id, name: m.name, mime: x.mime || m.mime || '' }; }
+          catch { return { id: x.id, name: names[x.id] || 'Image', mime: x.mime || '' }; }
+        }));
+        images = [...metas.filter(m => getViewKind(m.mime, m.name) === 'image'), { id, name, mime: mime || '' }];
+        const seen = new Set<string>();
+        images = images.filter(m => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+        images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        imageIndex = Math.max(0, images.findIndex(x => x.id === id));
+      }
       const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
       viewerUrlRef.current = url;
       resetViewerTransform();
-      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
+      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, images, imageIndex });
     } catch (e: any) {
       setViewerErr(e?.message || 'Could not open file');
       resetViewerTransform();
@@ -738,6 +750,19 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setDecoyFolders(f => [...f, { id: newDecoyId(), name: '' }]);
   }
 
+  async function uploadDecoyFiles(files: FileList | null, target: 'lock' | 'edit') {
+    if (!files?.length) return;
+    const docs = await Promise.all(Array.from(files).map(async (file) => {
+      let text = '';
+      try { text = await file.text(); } catch { text = ''; }
+      const lower = file.name.toLowerCase();
+      const kind: 'txt' | 'md' = (lower.endsWith('.md') || lower.endsWith('.markdown')) ? 'md' : 'txt';
+      return { id: newDecoyId(), folderId: null as string | null, name: file.name || (kind === 'md' ? 'New Markdown.md' : 'New Text Document.txt'), kind, text };
+    }));
+    if (target === 'lock') setDecoyDocs(d => [...d, ...docs]);
+    else setDecoyEdit(x => x ? { ...x, docs: [...x.docs, ...docs] } : x);
+  }
+
   function defaultDecoyNames(folders: DecoyFolderDraft[], docs: DecoyDocDraft[]) {
     const folderNames = folders.map((f, i) => f.name.trim() || `New Folder${i === 0 ? '' : ` (${i + 1})`}`);
     const used = new Set<string>();
@@ -778,7 +803,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         if (decoyEnabled) {
           const named = defaultDecoyNames(decoyFolders, decoyDocs);
           const tree: DecoyTree = {
-            name: decoyName.trim() || 'Notes',
+            name: decoyName.trim() || lockTarget.name || 'Decoy',
             folders: decoyFolders.map((x, i) => ({ id: x.id, parentId: null, name: named.folderNames[i] })),
             docs: decoyDocs.map((x, i) => ({ id: x.id, folderId: x.folderId, name: named.docNames[i], kind: x.kind, text: x.text }))
           };
@@ -809,7 +834,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     if (decoyEdit.enabled) {
       const named = defaultDecoyNames(decoyEdit.folders, decoyEdit.docs);
       const tree: DecoyTree = {
-        name: decoyEdit.treeName.trim() || 'Notes',
+        name: decoyEdit.treeName.trim() || decoyEdit.name || 'Decoy',
         folders: decoyEdit.folders.map((x, i) => ({ id: x.id, parentId: null, name: named.folderNames[i] })),
         docs: decoyEdit.docs.map((x, i) => ({ id: x.id, folderId: x.folderId, name: named.docNames[i], kind: x.kind, text: x.text }))
       };
@@ -1948,13 +1973,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 </label>
                 {decoyEnabled && (
                   <div className="space-y-3 rounded-md border border-zinc-200 p-3 bg-zinc-50/50">
-                    <div>
-                      <label htmlFor="decoy-root-name" className="block text-xs font-medium text-zinc-600 mb-1">Name</label>
-                      <input id="decoy-root-name" value={decoyName} onChange={e => setDecoyName(e.target.value)} placeholder="Notes" className="w-full border border-zinc-300 rounded-md px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" />
-                    </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button type="button" onClick={addDecoyFolderDraft} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add folder</button>
                       <button type="button" onClick={addDecoyDocDraft} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add document</button>
+                      <button type="button" onClick={() => decoyUploadRef.current?.click()} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Upload</button>
+                      <input ref={decoyUploadRef} type="file" multiple accept=".txt,.md,.markdown,text/plain,text/markdown,text/*,.json,.csv,.log,.xml,.yml,.yaml" className="hidden" onChange={e => { void uploadDecoyFiles(e.target.files, 'lock'); e.target.value = ''; }} />
                     </div>
                     {(decoyFolders.length > 0 || decoyDocs.length > 0) && (
                       <div className="space-y-2">
@@ -2009,13 +2032,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             </label>
             {decoyEdit.enabled && (
               <div className="space-y-3 rounded-md border border-zinc-200 p-3 bg-zinc-50/50">
-                <div>
-                  <label htmlFor="edit-decoy-name" className="block text-xs font-medium text-zinc-600 mb-1">Name <span className="font-normal text-zinc-400">(optional)</span></label>
-                  <input id="edit-decoy-name" value={decoyEdit.treeName} onChange={e => setDecoyEdit(x => x ? { ...x, treeName: e.target.value } : x)} placeholder="Notes" className="w-full border border-zinc-300 rounded-md px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" />
-                </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={() => setDecoyEdit(x => x ? { ...x, folders: [...x.folders, { id: newDecoyId(), name: '' }] } : x)} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add folder</button>
                   <button type="button" onClick={() => setDecoyEdit(x => x ? { ...x, docs: [...x.docs, { id: newDecoyId(), folderId: null, name: '', kind: 'txt' as const, text: '' }] } : x)} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add document</button>
+                  <button type="button" onClick={() => decoyEditUploadRef.current?.click()} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Upload</button>
+                  <input ref={decoyEditUploadRef} type="file" multiple accept=".txt,.md,.markdown,text/plain,text/markdown,text/*,.json,.csv,.log,.xml,.yml,.yaml" className="hidden" onChange={e => { void uploadDecoyFiles(e.target.files, 'edit'); e.target.value = ''; }} />
                 </div>
                 {(decoyEdit.folders.length > 0 || decoyEdit.docs.length > 0) && (
                   <div className="space-y-2">
