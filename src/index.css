@@ -1,12 +1,60 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --app-bg: #f3f1ec;
+  --app-surface: #fffdf9;
+  --app-surface-2: #ece8e1;
+  --app-sidebar: #ebe7df;
+  --app-border: #d8d2c8;
+  --app-border-strong: #c4bcaf;
+  --app-text: #1f2328;
+  --app-text-muted: #5f6772;
+  --app-text-faint: #8a9199;
+  --app-accent: #0f766e;
+  --app-accent-hover: #0d655e;
+  --app-accent-soft: #d9eeeb;
+  --app-danger: #b42318;
+  --app-danger-soft: #fee4e2;
+  --app-success: #067647;
+  --app-success-soft: #dcfae6;
+  --app-shadow: 0 1px 2px rgba(31,35,40,.06), 0 8px 24px rgba(31,35,40,.06);
+  --app-font: "Avenir Next", "Segoe UI Variable", "Trebuchet MS", "Noto Sans", sans-serif;
+  --app-mono: "Cascadia Mono", "JetBrains Mono", ui-monospace, monospace;
+  color-scheme: light;
+}
+
+.dark {
+  --app-bg: #11161c;
+  --app-surface: #171e26;
+  --app-surface-2: #1f2933;
+  --app-sidebar: #141b22;
+  --app-border: #2a3642;
+  --app-border-strong: #3a4958;
+  --app-text: #e7edf3;
+  --app-text-muted: #a7b4c2;
+  --app-text-faint: #738496;
+  --app-accent: #2dd4bf;
+  --app-accent-hover: #5eead4;
+  --app-accent-soft: rgba(45, 212, 191, .14);
+  --app-danger: #f97066;
+  --app-danger-soft: rgba(249, 112, 102, .14);
+  --app-success: #47cd89;
+  --app-success-soft: rgba(71, 205, 137, .14);
+  --app-shadow: 0 1px 2px rgba(0,0,0,.35), 0 12px 32px rgba(0,0,0,.35);
+  color-scheme: dark;
 }
 
 html, body, #root { height: 100%; margin: 0; }
 html { -webkit-text-size-adjust: 100%; }
-body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #fafafa; color: #18181b; -webkit-font-smoothing: antialiased; }
+body {
+  font-family: var(--app-font);
+  background: var(--app-bg);
+  color: var(--app-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 
 /* Prevent iOS focus zoom (Safari zooms when form control font-size < 16px) */
 @media screen and (max-width: 768px) {
@@ -14,15 +62,56 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
 }
 button, input, textarea, select, a { touch-action: manipulation; }
 
-.editor-content { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.6; }
+/* Theme remap for existing utility classes (broad dark/light coherence) */
+.bg-white { background-color: var(--app-surface) !important; }
+.bg-zinc-50, .bg-\[\#fafafa\] { background-color: var(--app-bg) !important; }
+.bg-zinc-100 { background-color: var(--app-surface-2) !important; }
+.bg-zinc-200 { background-color: var(--app-border) !important; }
+.bg-zinc-900 { background-color: var(--app-accent) !important; }
+.hover\:bg-zinc-800:hover { background-color: var(--app-accent-hover) !important; }
+.hover\:bg-zinc-50:hover, .hover\:bg-zinc-100:hover { background-color: var(--app-surface-2) !important; }
+.text-zinc-900, .text-zinc-800 { color: var(--app-text) !important; }
+.text-zinc-700, .text-zinc-600, .text-zinc-500 { color: var(--app-text-muted) !important; }
+.text-zinc-400 { color: var(--app-text-faint) !important; }
+.border-zinc-100, .border-zinc-200, .border-zinc-300 { border-color: var(--app-border) !important; }
+.divide-zinc-100 > :not([hidden]) ~ :not([hidden]), .divide-zinc-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--app-border) !important; }
+.ring-zinc-900 { --tw-ring-color: var(--app-accent) !important; }
+.focus\:border-zinc-900:focus, .focus\:border-zinc-400:focus { border-color: var(--app-accent) !important; }
+.focus\:ring-zinc-900\/10:focus { --tw-ring-color: color-mix(in srgb, var(--app-accent) 18%, transparent) !important; }
+.text-white { color: #fff !important; }
+.bg-black\/20 { background-color: rgba(8, 12, 16, .38) !important; }
+.dark .bg-black\/20 { background-color: rgba(2, 6, 10, .62) !important; }
+
+/* Semantic accents */
+.text-red-600 { color: var(--app-danger) !important; }
+.border-red-600 { border-color: var(--app-danger) !important; }
+.hover\:bg-red-600:hover { background-color: var(--app-danger) !important; }
+.hover\:bg-red-50:hover { background-color: var(--app-danger-soft) !important; }
+.text-emerald-700, .text-emerald-600 { color: var(--app-success) !important; }
+.border-emerald-200 { border-color: color-mix(in srgb, var(--app-success) 28%, transparent) !important; }
+.bg-emerald-50 { background-color: var(--app-success-soft) !important; }
+.bg-green-500 { background-color: var(--app-success) !important; }
+
+/* Surfaces / controls */
+input, textarea, select {
+  background-color: var(--app-surface);
+  color: var(--app-text);
+  border-color: var(--app-border);
+}
+input::placeholder, textarea::placeholder { color: var(--app-text-faint); }
+button { color: inherit; }
+.dialog-panel { background: var(--app-surface); border-color: var(--app-border); box-shadow: var(--app-shadow); }
+header, aside, nav, main, table, th, td { border-color: var(--app-border); }
+
+.editor-content { font-family: var(--app-font); font-size: 14px; line-height: 1.6; }
 .editor-h1 { font-size: 1.4em; font-weight: 700; line-height: 1.2; margin: 0.4em 0; }
 .editor-h2 { font-size: 1.15em; font-weight: 600; line-height: 1.25; margin: 0.4em 0; }
-.editor-quote { border-left: 3px solid #d4d4d8; padding-left: 0.75rem; color: #52525b; }
-.editor-code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.9em; background: #f4f4f5; padding: 0 0.3em; border-radius: 3px; }
+.editor-quote { border-left: 3px solid var(--app-border-strong); padding-left: 0.75rem; color: var(--app-text-muted); }
+.editor-code { font-family: var(--app-mono); font-size: 0.9em; background: var(--app-surface-2); padding: 0 0.3em; border-radius: 3px; }
 .editor-content ul { list-style-type: disc; padding-left: 1.5rem; }
 .editor-content ol { list-style-type: decimal; padding-left: 1.5rem; }
 
-/* Popup backdrop: gentle fade only, no blur */
+/* Popup backdrop */
 .dialog-backdrop { animation: dialog-fade-in 140ms ease-out; }
 .dialog-panel { animation: dialog-pop-in 140ms ease-out; }
 @keyframes dialog-fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -35,7 +124,9 @@ button, input, textarea, select, a { touch-action: manipulation; }
   .dialog-backdrop, .dialog-panel, .row-slide-in, .row-slide-out { animation: none; }
 }
 
-/* minimal utilities */
-:focus-visible { outline: 2px solid #18181b; outline-offset: 2px; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 4px; }
+:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--app-border-strong); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+::selection { background: color-mix(in srgb, var(--app-accent) 24%, transparent); }
