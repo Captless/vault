@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -93,10 +93,15 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const [inlineUnlockId, setInlineUnlockId] = useState<string | null>(null);
   // File viewer (images, PDFs)
   type ViewerImage = { id: string; name: string; mime: string };
-  const [viewer, setViewer] = useState<{ id: string; name: string; mime: string; url: string; kind: 'image' | 'pdf'; zoom: number; images: ViewerImage[]; imageIndex: number } | null>(null);
+  const [viewer, setViewer] = useState<{ id: string; name: string; mime: string; url: string; kind: 'image' | 'pdf'; images: ViewerImage[]; imageIndex: number } | null>(null);
   const [viewerBusy, setViewerBusy] = useState(false);
   const [viewerErr, setViewerErr] = useState('');
+  const [viewerScale, setViewerScale] = useState(1);
+  const [viewerPan, setViewerPan] = useState({ x: 0, y: 0 });
   const viewerUrlRef = useRef<string | null>(null);
+  const viewerStageRef = useRef<HTMLDivElement>(null);
+  const viewerDragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const viewerLastTapRef = useRef(0);
   useEffect(() => () => { if (viewerUrlRef.current) URL.revokeObjectURL(viewerUrlRef.current); }, []);
 
   function openMenuAt(id: string, e: React.MouseEvent) {
@@ -400,11 +405,30 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     return null;
   }
 
+  function resetViewerTransform() {
+    setViewerScale(1);
+    setViewerPan({ x: 0, y: 0 });
+  }
+
+  function toggleImageZoom() {
+    setViewerScale(s => (s > 1 ? 1 : 2.25));
+    setViewerPan({ x: 0, y: 0 });
+  }
+
+  function clampViewerPan(x: number, y: number, scale: number) {
+    if (scale <= 1) return { x: 0, y: 0 };
+    const r = viewerStageRef.current?.getBoundingClientRect();
+    const maxX = r ? (r.width * (scale - 1)) / 2 : 240;
+    const maxY = r ? (r.height * (scale - 1)) / 2 : 240;
+    return { x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
+  }
+
   function closeViewer() {
     if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
     setViewer(null);
     setViewerErr('');
     setViewerBusy(false);
+    resetViewerTransform();
   }
 
   async function loadViewerImage(id: string, images: ViewerImage[], imageIndex: number) {
@@ -420,10 +444,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       if (!kind) throw new Error('This file type cannot be previewed');
       const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
       viewerUrlRef.current = url;
-      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, zoom: 1, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
+      resetViewerTransform();
+      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
     } catch (e: any) {
       setViewerErr(e?.message || 'Could not open file');
-      setViewer(prev => prev ? { ...prev, name: 'File', kind: 'image' } : { id, name: 'File', mime: '', url: '', kind: 'image', zoom: 1, images, imageIndex });
+      resetViewerTransform();
+      setViewer(prev => prev ? { ...prev, name: 'File', kind: 'image' } : { id, name: 'File', mime: '', url: '', kind: 'image', images, imageIndex });
     } finally {
       setViewerBusy(false);
     }
@@ -449,10 +475,12 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       if (!kind) throw new Error('This file type cannot be previewed');
       const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
       viewerUrlRef.current = url;
-      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, zoom: 1, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
+      resetViewerTransform();
+      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
     } catch (e: any) {
       setViewerErr(e?.message || 'Could not open file');
-      setViewer({ id, name: 'File', mime: '', url: '', kind: 'image', zoom: 1, images: [], imageIndex: 0 });
+      resetViewerTransform();
+      setViewer({ id, name: 'File', mime: '', url: '', kind: 'image', images: [], imageIndex: 0 });
     } finally {
       setViewerBusy(false);
     }
@@ -709,6 +737,24 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setDecoyFolders(f => [...f, { id: newDecoyId(), name: '' }]);
   }
 
+  function defaultDecoyNames(folders: DecoyFolderDraft[], docs: DecoyDocDraft[]) {
+    const folderNames = folders.map((f, i) => f.name.trim() || `New Folder${i === 0 ? '' : ` (${i + 1})`}`);
+    const used = new Set<string>();
+    const uniqFolder = folderNames.map((n) => {
+      let v = n; let k = 2; while (used.has(v.toLowerCase())) v = `${n} (${k++})`; used.add(v.toLowerCase()); return v;
+    });
+    const usedDocs = new Set<string>();
+    const docNames = docs.map((d, i) => {
+      const base = d.kind === 'md' ? 'New Markdown.md' : 'New Text Document.txt';
+      let v = d.name.trim() || (i === 0 ? base : base.replace(/(\.[^.]+)?$/, ` (${i + 1})$1`));
+      const ext = d.kind === 'md' ? '.md' : '.txt';
+      if (v && !v.toLowerCase().endsWith(ext) && !/\.[^.]+$/.test(v)) v += ext;
+      while (usedDocs.has(v.toLowerCase())) v = v.replace(/(\.[^.]+)?$/, ` (2)$1`) && (() => { let k=2,n=v; while(usedDocs.has(n.toLowerCase())){n=v.replace(/(\.[^.]+)?$/,` (${k++})$1`)} return n; })();
+      let k = 2; let n = v; while (usedDocs.has(n.toLowerCase())) { n = v.replace(/(\.[^.]+)?$/, ` (${k++})$1`); } usedDocs.add(n.toLowerCase()); return n;
+    });
+    return { folderNames: uniqFolder, docNames };
+  }
+
   async function doLock() {
     if (!lockTarget) return;
     setLockErr('');
@@ -729,10 +775,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         const key = await setupFolderKey(f.id, lockPw);
         await protectFolder(f, key);
         if (decoyEnabled) {
+          const named = defaultDecoyNames(decoyFolders, decoyDocs);
           const tree: DecoyTree = {
             name: decoyName.trim() || 'Notes',
-            folders: decoyFolders.filter(x => x.name.trim()).map(x => ({ id: x.id, parentId: null, name: x.name.trim() })),
-            docs: decoyDocs.filter(x => x.name.trim()).map(x => ({ id: x.id, folderId: x.folderId, name: x.name.trim(), kind: x.kind, text: x.text }))
+            folders: decoyFolders.map((x, i) => ({ id: x.id, parentId: null, name: named.folderNames[i] })),
+            docs: decoyDocs.map((x, i) => ({ id: x.id, folderId: x.folderId, name: named.docNames[i], kind: x.kind, text: x.text }))
           };
           await saveDecoyTree(f.id, tree);
         } else {
@@ -759,10 +806,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   async function saveDecoyEdit() {
     if (!decoyEdit) return;
     if (decoyEdit.enabled) {
+      const named = defaultDecoyNames(decoyEdit.folders, decoyEdit.docs);
       const tree: DecoyTree = {
         name: decoyEdit.treeName.trim() || 'Notes',
-        folders: decoyEdit.folders.filter(x => x.name.trim()).map(x => ({ id: x.id, parentId: null, name: x.name.trim() })),
-        docs: decoyEdit.docs.filter(x => x.name.trim()).map(x => ({ id: x.id, folderId: x.folderId, name: x.name.trim(), kind: x.kind, text: x.text }))
+        folders: decoyEdit.folders.map((x, i) => ({ id: x.id, parentId: null, name: named.folderNames[i] })),
+        docs: decoyEdit.docs.map((x, i) => ({ id: x.id, folderId: x.folderId, name: named.docNames[i], kind: x.kind, text: x.text }))
       };
       await saveDecoyTree(decoyEdit.folderId, tree);
     } else {
@@ -1858,141 +1906,152 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </div>
       </Dialog>
 
-      <Dialog open={!!lockTarget} onClose={() => setLockTarget(null)} title="Lock" width="32rem">
+      <Dialog open={!!lockTarget} onClose={() => { setLockTarget(null); resetLockWizard(); }} title={lockStep === 1 ? `Lock ${lockTarget?.name || ''}` : 'Decoy (optional)'} width="28rem">
         {lockStep === 1 ? (
-          <div className="space-y-3">
-            <p className="text-xs text-zinc-500">Protect <span className="font-medium text-zinc-900">{lockTarget?.name}</span> with a folder password. Files inherit the folder's lock.</p>
+          <div className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-zinc-600 mb-1.5">Folder password</label>
-              <input type="password" value={lockPw} onChange={e => { setLockPw(e.target.value); setLockErr(''); }} className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" autoFocus />
+              <label htmlFor="lock-pw" className="block text-xs font-medium text-zinc-700 mb-1.5">Password</label>
+              <input id="lock-pw" type="password" value={lockPw} onChange={e => { setLockPw(e.target.value); setLockErr(''); }} className="w-full border border-zinc-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" autoComplete="new-password" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-600 mb-1.5">Confirm</label>
-              <input type="password" value={lockPw2} onChange={e => { setLockPw2(e.target.value); setLockErr(''); }} className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
+              <label htmlFor="lock-pw2" className="block text-xs font-medium text-zinc-700 mb-1.5">Confirm password</label>
+              <input id="lock-pw2" type="password" value={lockPw2} onChange={e => { setLockPw2(e.target.value); setLockErr(''); }} className="w-full border border-zinc-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" autoComplete="new-password" />
             </div>
             {lockTarget?.type === 'item' && (
               <div>
-                <label className="block text-xs font-medium text-zinc-600 mb-1.5">Decoy text (optional)</label>
-                <textarea value={lockDecoy} onChange={e => setLockDecoy(e.target.value)} className="w-full h-20 border border-zinc-300 rounded p-2.5 text-sm focus:border-zinc-900" placeholder="Shown when an incorrect password is entered" />
+                <label htmlFor="lock-decoy-txt" className="block text-xs font-medium text-zinc-700 mb-1.5">Decoy text <span className="font-normal text-zinc-400">(optional)</span></label>
+                <textarea id="lock-decoy-txt" value={lockDecoy} onChange={e => setLockDecoy(e.target.value)} className="w-full h-20 border border-zinc-300 rounded-md p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" placeholder="Shown on wrong password" />
               </div>
             )}
-            {lockErr && <p className="text-xs text-red-600">{lockErr}</p>}
+            {lockErr && <p className="text-xs text-red-600" role="alert">{lockErr}</p>}
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={() => setLockTarget(null)} className="px-3 py-2 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
-              <button onClick={doLock} disabled={busy} className="px-4 py-2 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">Next</button>
+              <button type="button" onClick={() => { setLockTarget(null); resetLockWizard(); }} className="px-3 py-2 text-sm rounded-md border border-zinc-300 hover:bg-zinc-50">Cancel</button>
+              <button type="button" onClick={doLock} disabled={busy} className="px-4 py-2 text-sm rounded-md bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">Continue</button>
             </div>
           </div>
         ) : (
-          <div className="space-y-3 max-h-[70vh] overflow-auto pr-0.5">
+          <div className="space-y-4 max-h-[70vh] overflow-auto pr-0.5">
             {lockTarget?.type === 'item' ? (
               <>
-                <p className="text-xs text-zinc-500">Locking this file protects its parent folder. The decoy text you entered will be shown for this document on a wrong password.</p>
-                <div className="flex justify-between pt-1">
-                  <button onClick={() => { setLockStep(1); setLockErr(''); }} className="text-xs text-zinc-500 hover:text-zinc-900">← Back</button>
-                  <button onClick={doLock} disabled={busy} className="px-4 py-2 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Locking…' : 'Lock'}</button>
+                <p className="text-sm text-zinc-600">This locks the parent folder.</p>
+                <div className="flex justify-between items-center pt-1">
+                  <button type="button" onClick={() => { setLockStep(1); setLockErr(''); }} className="text-sm text-zinc-500 hover:text-zinc-900">Back</button>
+                  <button type="button" onClick={doLock} disabled={busy} className="px-4 py-2 text-sm rounded-md bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Locking…' : 'Lock'}</button>
                 </div>
               </>
-            ) : (<>
-            <p className="text-xs text-zinc-500">Step 2 — Decoy folder (optional). If someone enters a wrong password this folder is shown instead. Only folders and TXT/MD files — no binaries.</p>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={decoyEnabled} onChange={e => setDecoyEnabled(e.target.checked)} className="h-4 w-4" /> Add decoy folder
-            </label>
-            {decoyEnabled && (
+            ) : (
               <>
-                <div>
-                  <label className="block text-xs font-medium text-zinc-600 mb-1.5">Decoy folder name</label>
-                  <input value={decoyName} onChange={e => setDecoyName(e.target.value)} placeholder="e.g. Notes" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-zinc-600">Subfolders (only folders + TXT/MD inside)</p>
-                  {decoyFolders.map(f => (
-                    <div key={f.id} className="flex gap-2 items-center">
-                      <input value={f.name} onChange={e => setDecoyFolders(fs => fs.map(x => x.id === f.id ? { ...x, name: e.target.value } : x))} placeholder="Subfolder name" className="flex-1 border border-zinc-300 rounded px-2 py-1.5 text-sm" />
-                      <button onClick={() => { setDecoyFolders(fs => fs.filter(x => x.id !== f.id)); setDecoyDocs(ds => ds.map(d => d.folderId === f.id ? { ...d, folderId: null } : d)); }} className="text-zinc-400 hover:text-red-600"><Trash2 size={14} /></button>
+                <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 cursor-pointer hover:bg-zinc-50">
+                  <span className="text-sm text-zinc-800">Show decoy on wrong password</span>
+                  <input type="checkbox" checked={decoyEnabled} onChange={e => setDecoyEnabled(e.target.checked)} className="h-4 w-4 rounded border-zinc-300" />
+                </label>
+                {decoyEnabled && (
+                  <div className="space-y-3 rounded-md border border-zinc-200 p-3 bg-zinc-50/50">
+                    <div>
+                      <label htmlFor="decoy-root-name" className="block text-xs font-medium text-zinc-600 mb-1">Decoy name <span className="font-normal text-zinc-400">(optional)</span></label>
+                      <input id="decoy-root-name" value={decoyName} onChange={e => setDecoyName(e.target.value)} placeholder="Notes" className="w-full border border-zinc-300 rounded-md px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" />
                     </div>
-                  ))}
-                  <button onClick={addDecoyFolderDraft} className="text-xs border border-zinc-300 rounded px-2.5 py-1.5 hover:bg-zinc-50">+ Subfolder</button>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-zinc-600">Decoy documents (TXT/MD only)</p>
-                  {decoyDocs.map(d => (
-                    <div key={d.id} className="border border-zinc-200 rounded p-2 space-y-2">
-                      <div className="flex gap-2">
-                        <input value={d.name} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, name: e.target.value } : x))} placeholder="Document name" className="flex-1 border border-zinc-300 rounded px-2 py-1.5 text-sm" />
-                        <select value={d.kind} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, kind: e.target.value as 'txt' | 'md' } : x))} className="border border-zinc-300 rounded px-1.5 text-sm bg-white">
-                          <option value="txt">TXT</option><option value="md">MD</option>
-                        </select>
-                        <select value={d.folderId ?? ''} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, folderId: e.target.value || null } : x))} className="border border-zinc-300 rounded px-1.5 text-sm bg-white max-w-28">
-                          <option value="">Root</option>
-                          {decoyFolders.map(f => <option key={f.id} value={f.id}>{f.name || 'Folder'}</option>)}
-                        </select>
-                        <button onClick={() => setDecoyDocs(ds => ds.filter(x => x.id !== d.id))} className="text-zinc-400 hover:text-red-600"><Trash2 size={14} /></button>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={addDecoyFolderDraft} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add folder</button>
+                      <button type="button" onClick={addDecoyDocDraft} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add document</button>
+                    </div>
+                    {(decoyFolders.length > 0 || decoyDocs.length > 0) && (
+                      <div className="space-y-2">
+                        {decoyFolders.map((f, i) => (
+                          <div key={f.id} className="flex gap-2 items-center rounded-md border border-zinc-200 bg-white px-2 py-1.5">
+                            <Folder size={13} className="text-zinc-400 shrink-0" aria-hidden="true" />
+                            <input value={f.name} onChange={e => setDecoyFolders(fs => fs.map(x => x.id === f.id ? { ...x, name: e.target.value } : x))} placeholder={`New Folder${i ? ` (${i + 1})` : ''}`} className="flex-1 min-w-0 text-sm bg-transparent focus:outline-none" aria-label="Folder name" />
+                            <button type="button" onClick={() => { setDecoyFolders(fs => fs.filter(x => x.id !== f.id)); setDecoyDocs(ds => ds.map(d => d.folderId === f.id ? { ...d, folderId: null } : d)); }} className="p-1 rounded text-zinc-400 hover:text-red-600" aria-label="Remove folder"><Trash2 size={13} /></button>
+                          </div>
+                        ))}
+                        {decoyDocs.map((d) => (
+                          <div key={d.id} className="rounded-md border border-zinc-200 bg-white p-2 space-y-1.5">
+                            <div className="flex gap-1.5 items-center">
+                              <FileText size={13} className="text-zinc-400 shrink-0" aria-hidden="true" />
+                              <input value={d.name} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, name: e.target.value } : x))} placeholder={d.kind === 'md' ? 'New Markdown.md' : 'New Text Document.txt'} className="flex-1 min-w-0 text-sm focus:outline-none" aria-label="Document name" />
+                              <select value={d.kind} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, kind: e.target.value as 'txt' | 'md' } : x))} className="border border-zinc-200 rounded px-1 py-0.5 text-xs bg-zinc-50" aria-label="Type">
+                                <option value="txt">TXT</option><option value="md">MD</option>
+                              </select>
+                              {decoyFolders.length > 0 && (
+                                <select value={d.folderId ?? ''} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, folderId: e.target.value || null } : x))} className="border border-zinc-200 rounded px-1 py-0.5 text-xs bg-zinc-50 max-w-[5.5rem]" aria-label="Location">
+                                  <option value="">Root</option>
+                                  {decoyFolders.map(f => <option key={f.id} value={f.id}>{f.name.trim() || 'Folder'}</option>)}
+                                </select>
+                              )}
+                              <button type="button" onClick={() => setDecoyDocs(ds => ds.filter(x => x.id !== d.id))} className="p-1 rounded text-zinc-400 hover:text-red-600" aria-label="Remove document"><Trash2 size={13} /></button>
+                            </div>
+                            <textarea value={d.text} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, text: e.target.value } : x))} placeholder="Content (optional)" className="w-full h-14 border border-zinc-200 rounded p-2 text-xs resize-y focus:outline-none focus:ring-2 focus:ring-zinc-900/10" aria-label="Document content" />
+                          </div>
+                        ))}
                       </div>
-                      <textarea value={d.text} onChange={e => setDecoyDocs(ds => ds.map(x => x.id === d.id ? { ...x, text: e.target.value } : x))} placeholder="Decoy text shown on wrong password…" className="w-full h-16 border border-zinc-300 rounded p-2 text-sm" />
-                    </div>
-                  ))}
-                  <button onClick={addDecoyDocDraft} className="text-xs border border-zinc-300 rounded px-2.5 py-1.5 hover:bg-zinc-50">+ Document</button>
+                    )}
+                    <p className="text-[11px] text-zinc-500">Untitled items get default names.</p>
+                  </div>
+                )}
+                {lockErr && <p className="text-xs text-red-600" role="alert">{lockErr}</p>}
+                <div className="flex justify-between items-center pt-1">
+                  <button type="button" onClick={() => { setLockStep(1); setLockErr(''); }} className="text-sm text-zinc-500 hover:text-zinc-900">Back</button>
+                  <button type="button" onClick={doLock} disabled={busy} className="px-4 py-2 text-sm rounded-md bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Locking…' : 'Lock'}</button>
                 </div>
               </>
             )}
-            {lockErr && <p className="text-xs text-red-600">{lockErr}</p>}
-            <div className="flex justify-between pt-1">
-              <button onClick={() => { setLockStep(1); setLockErr(''); }} className="text-xs text-zinc-500 hover:text-zinc-900">← Back</button>
-              <button onClick={doLock} disabled={busy} className="px-4 py-2 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Locking…' : 'Lock'}</button>
-            </div>
-            </>)}
           </div>
         )}
       </Dialog>
 
-      <Dialog open={!!decoyEdit} onClose={() => setDecoyEdit(null)} title="Edit decoy" width="32rem">
+      <Dialog open={!!decoyEdit} onClose={() => setDecoyEdit(null)} title="Decoy" width="28rem">
         {decoyEdit && (
-          <div className="space-y-3 max-h-[70vh] overflow-auto pr-0.5">
-            <p className="text-xs text-zinc-500">Decoy for <span className="font-medium text-zinc-900">{decoyEdit.name}</span>. Shown when a wrong password is entered. Only folders + TXT/MD.</p>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={decoyEdit.enabled} onChange={e => setDecoyEdit(x => x ? { ...x, enabled: e.target.checked } : x)} className="h-4 w-4" /> Enable decoy folder
+          <div className="space-y-4 max-h-[70vh] overflow-auto pr-0.5">
+            <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 cursor-pointer hover:bg-zinc-50">
+              <span className="text-sm text-zinc-800">Enable decoy for <span className="font-medium">{decoyEdit.name}</span></span>
+              <input type="checkbox" checked={decoyEdit.enabled} onChange={e => setDecoyEdit(x => x ? { ...x, enabled: e.target.checked } : x)} className="h-4 w-4 rounded border-zinc-300" />
             </label>
             {decoyEdit.enabled && (
-              <>
+              <div className="space-y-3 rounded-md border border-zinc-200 p-3 bg-zinc-50/50">
                 <div>
-                  <label className="block text-xs font-medium text-zinc-600 mb-1.5">Decoy folder name</label>
-                  <input value={decoyEdit.treeName} onChange={e => setDecoyEdit(x => x ? { ...x, treeName: e.target.value } : x)} placeholder="e.g. Notes" className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900" />
+                  <label htmlFor="edit-decoy-name" className="block text-xs font-medium text-zinc-600 mb-1">Name <span className="font-normal text-zinc-400">(optional)</span></label>
+                  <input id="edit-decoy-name" value={decoyEdit.treeName} onChange={e => setDecoyEdit(x => x ? { ...x, treeName: e.target.value } : x)} placeholder="Notes" className="w-full border border-zinc-300 rounded-md px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-400" />
                 </div>
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-zinc-600">Subfolders</p>
-                  {decoyEdit.folders.map(f => (
-                    <div key={f.id} className="flex gap-2 items-center">
-                      <input value={f.name} onChange={e => setDecoyEdit(x => x ? { ...x, folders: x.folders.map(y => y.id === f.id ? { ...y, name: e.target.value } : y) } : x)} placeholder="Subfolder name" className="flex-1 border border-zinc-300 rounded px-2 py-1.5 text-sm" />
-                      <button onClick={() => setDecoyEdit(x => x ? { ...x, folders: x.folders.filter(y => y.id !== f.id), docs: x.docs.map(d => d.folderId === f.id ? { ...d, folderId: null } : d) } : x)} className="text-zinc-400 hover:text-red-600"><Trash2 size={14} /></button>
-                    </div>
-                  ))}
-                  <button onClick={() => setDecoyEdit(x => x ? { ...x, folders: [...x.folders, { id: newDecoyId(), name: '' }] } : x)} className="text-xs border border-zinc-300 rounded px-2.5 py-1.5 hover:bg-zinc-50">+ Subfolder</button>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setDecoyEdit(x => x ? { ...x, folders: [...x.folders, { id: newDecoyId(), name: '' }] } : x)} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add folder</button>
+                  <button type="button" onClick={() => setDecoyEdit(x => x ? { ...x, docs: [...x.docs, { id: newDecoyId(), folderId: null, name: '', kind: 'txt' as const, text: '' }] } : x)} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 bg-white hover:bg-zinc-50">Add document</button>
                 </div>
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-zinc-600">Documents (TXT/MD only)</p>
-                  {decoyEdit.docs.map(d => (
-                    <div key={d.id} className="border border-zinc-200 rounded p-2 space-y-2">
-                      <div className="flex gap-2">
-                        <input value={d.name} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, name: e.target.value } : y) } : x)} placeholder="Document name" className="flex-1 border border-zinc-300 rounded px-2 py-1.5 text-sm" />
-                        <select value={d.kind} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, kind: e.target.value as 'txt' | 'md' } : y) } : x)} className="border border-zinc-300 rounded px-1.5 text-sm bg-white">
-                          <option value="txt">TXT</option><option value="md">MD</option>
-                        </select>
-                        <select value={d.folderId ?? ''} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, folderId: e.target.value || null } : y) } : x)} className="border border-zinc-300 rounded px-1.5 text-sm bg-white max-w-28">
-                          <option value="">Root</option>
-                          {decoyEdit.folders.map(f => <option key={f.id} value={f.id}>{f.name || 'Folder'}</option>)}
-                        </select>
-                        <button onClick={() => setDecoyEdit(x => x ? { ...x, docs: x.docs.filter(y => y.id !== d.id) } : x)} className="text-zinc-400 hover:text-red-600"><Trash2 size={14} /></button>
+                {(decoyEdit.folders.length > 0 || decoyEdit.docs.length > 0) && (
+                  <div className="space-y-2">
+                    {decoyEdit.folders.map((f, i) => (
+                      <div key={f.id} className="flex gap-2 items-center rounded-md border border-zinc-200 bg-white px-2 py-1.5">
+                        <Folder size={13} className="text-zinc-400 shrink-0" aria-hidden="true" />
+                        <input value={f.name} onChange={e => setDecoyEdit(x => x ? { ...x, folders: x.folders.map(y => y.id === f.id ? { ...y, name: e.target.value } : y) } : x)} placeholder={`New Folder${i ? ` (${i + 1})` : ''}`} className="flex-1 min-w-0 text-sm bg-transparent focus:outline-none" aria-label="Folder name" />
+                        <button type="button" onClick={() => setDecoyEdit(x => x ? { ...x, folders: x.folders.filter(y => y.id !== f.id), docs: x.docs.map(d => d.folderId === f.id ? { ...d, folderId: null } : d) } : x)} className="p-1 rounded text-zinc-400 hover:text-red-600" aria-label="Remove folder"><Trash2 size={13} /></button>
                       </div>
-                      <textarea value={d.text} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, text: e.target.value } : y) } : x)} placeholder="Decoy text…" className="w-full h-16 border border-zinc-300 rounded p-2 text-sm" />
-                    </div>
-                  ))}
-                  <button onClick={() => setDecoyEdit(x => x ? { ...x, docs: [...x.docs, { id: newDecoyId(), folderId: null, name: '', kind: 'txt' as const, text: '' }] } : x)} className="text-xs border border-zinc-300 rounded px-2.5 py-1.5 hover:bg-zinc-50">+ Document</button>
-                </div>
-              </>
+                    ))}
+                    {decoyEdit.docs.map((d) => (
+                      <div key={d.id} className="rounded-md border border-zinc-200 bg-white p-2 space-y-1.5">
+                        <div className="flex gap-1.5 items-center">
+                          <FileText size={13} className="text-zinc-400 shrink-0" aria-hidden="true" />
+                          <input value={d.name} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, name: e.target.value } : y) } : x)} placeholder={d.kind === 'md' ? 'New Markdown.md' : 'New Text Document.txt'} className="flex-1 min-w-0 text-sm focus:outline-none" aria-label="Document name" />
+                          <select value={d.kind} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, kind: e.target.value as 'txt' | 'md' } : y) } : x)} className="border border-zinc-200 rounded px-1 py-0.5 text-xs bg-zinc-50" aria-label="Type">
+                            <option value="txt">TXT</option><option value="md">MD</option>
+                          </select>
+                          {decoyEdit.folders.length > 0 && (
+                            <select value={d.folderId ?? ''} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, folderId: e.target.value || null } : y) } : x)} className="border border-zinc-200 rounded px-1 py-0.5 text-xs bg-zinc-50 max-w-[5.5rem]" aria-label="Location">
+                              <option value="">Root</option>
+                              {decoyEdit.folders.map(f => <option key={f.id} value={f.id}>{f.name.trim() || 'Folder'}</option>)}
+                            </select>
+                          )}
+                          <button type="button" onClick={() => setDecoyEdit(x => x ? { ...x, docs: x.docs.filter(y => y.id !== d.id) } : x)} className="p-1 rounded text-zinc-400 hover:text-red-600" aria-label="Remove document"><Trash2 size={13} /></button>
+                        </div>
+                        <textarea value={d.text} onChange={e => setDecoyEdit(x => x ? { ...x, docs: x.docs.map(y => y.id === d.id ? { ...y, text: e.target.value } : y) } : x)} placeholder="Content (optional)" className="w-full h-14 border border-zinc-200 rounded p-2 text-xs resize-y focus:outline-none focus:ring-2 focus:ring-zinc-900/10" aria-label="Document content" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-zinc-500">Untitled items get default names.</p>
+              </div>
             )}
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={() => setDecoyEdit(null)} className="px-3 py-2 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
-              <button onClick={saveDecoyEdit} className="px-4 py-2 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800">Save decoy</button>
+              <button type="button" onClick={() => setDecoyEdit(null)} className="px-3 py-2 text-sm rounded-md border border-zinc-300 hover:bg-zinc-50">Cancel</button>
+              <button type="button" onClick={saveDecoyEdit} className="px-4 py-2 text-sm rounded-md bg-zinc-900 text-white hover:bg-zinc-800">Save</button>
             </div>
           </div>
         )}
@@ -2008,57 +2067,86 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </div>
       </Dialog>
 
-      <Dialog open={!!viewer || viewerBusy} onClose={closeViewer} title={viewer?.name || (viewerBusy ? 'Opening file…' : 'File viewer')} width="min(96vw, 60rem)">
+      <Dialog open={!!viewer || viewerBusy} onClose={closeViewer} title={viewer?.name || (viewerBusy ? 'Opening…' : 'Preview')} width={viewer?.kind === 'pdf' ? 'min(96vw, 56rem)' : 'min(96vw, 64rem)'}>
         {viewerBusy ? (
-          <div className="py-16 text-center text-sm text-zinc-500" role="status" aria-live="polite">Decrypting and opening…</div>
+          <div className="py-20 text-center text-sm text-zinc-500" role="status" aria-live="polite">Opening…</div>
         ) : viewerErr ? (
-          <div className="space-y-3" role="alert">
+          <div className="space-y-3 py-2" role="alert">
             <p className="text-sm text-red-600">{viewerErr}</p>
           </div>
         ) : viewer ? (
-          <div className="flex flex-col gap-3 -mt-1">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0 flex items-center gap-2 text-xs text-zinc-500">
-                <span className="truncate">{viewer.mime || viewer.kind.toUpperCase()}</span>
-                {viewer.kind === 'image' && viewer.images.length > 1 && (
-                  <span className="shrink-0 tabular-nums text-zinc-400">{viewer.imageIndex + 1} / {viewer.images.length}</span>
-                )}
+          viewer.kind === 'image' ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-3 min-w-0">
+                <div className="min-w-0">
+                  {viewer.images.length > 1 ? <p className="text-[11px] text-zinc-500 tabular-nums">{viewer.imageIndex + 1} of {viewer.images.length}</p> : <p className="text-[11px] text-zinc-500">Double-click or double-tap to zoom</p>}
+                </div>
+                {viewer.url && <a href={viewer.url} download={viewer.name} className="shrink-0 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
               </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {viewer.kind === 'image' && (
+              <div
+                ref={viewerStageRef}
+                className="relative rounded-xl bg-zinc-100/80 overflow-hidden select-none touch-none"
+                style={{ height: 'min(72vh, 42rem)' }}
+              >
+                <div
+                  className="absolute inset-0 flex items-center justify-center p-2 sm:p-4"
+                  onDoubleClick={toggleImageZoom}
+                  onPointerDown={(e) => {
+                    if (viewerScale <= 1) {
+                      if (e.pointerType === 'touch') {
+                        const now = Date.now();
+                        if (now - viewerLastTapRef.current < 300) { e.preventDefault(); viewerLastTapRef.current = 0; toggleImageZoom(); return; }
+                        viewerLastTapRef.current = now;
+                      }
+                      return;
+                    }
+                    e.preventDefault();
+                    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                    viewerDragRef.current = { x: viewerPan.x, y: viewerPan.y, px: e.clientX, py: e.clientY };
+                  }}
+                  onPointerMove={(e) => {
+                    if (!viewerDragRef.current || viewerScale <= 1) return;
+                    const dx = e.clientX - viewerDragRef.current.px;
+                    const dy = e.clientY - viewerDragRef.current.py;
+                    setViewerPan(clampViewerPan(viewerDragRef.current.x + dx, viewerDragRef.current.y + dy, viewerScale));
+                  }}
+                  onPointerUp={() => { viewerDragRef.current = null; }}
+                  onPointerCancel={() => { viewerDragRef.current = null; }}
+                  style={{ cursor: viewerScale > 1 ? 'grab' : 'zoom-in' }}
+                  tabIndex={0}
+                  role="button"
+                  aria-pressed={viewerScale > 1}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleImageZoom(); } }}
+                  aria-label={`${viewer.name}. ${viewerScale > 1 ? 'Zoomed. Press Enter to reset, drag to move.' : 'Press Enter or double tap to zoom.'}`}
+                >
+                  <img
+                    src={viewer.url}
+                    alt={viewer.name}
+                    className="max-w-full max-h-full w-auto h-auto object-contain pointer-events-none"
+                    style={{ transform: `translate(${viewerPan.x}px, ${viewerPan.y}px) scale(${viewerScale})`, transformOrigin: 'center center', transition: viewerDragRef.current ? 'none' : 'transform 140ms ease-out' }}
+                    draggable={false}
+                  />
+                </div>
+                {viewer.images.length > 1 && (
                   <>
-                    <button type="button" onClick={() => setViewer(v => v ? { ...v, zoom: Math.max(0.25, +(v.zoom - 0.25).toFixed(2)) } : v)} disabled={viewer.zoom <= 0.25} aria-label="Zoom out" className="p-1.5 rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ZoomOut size={14} aria-hidden="true" /></button>
-                    <span className="text-[11px] tabular-nums text-zinc-500 w-10 text-center" aria-live="polite">{Math.round(viewer.zoom * 100)}%</span>
-                    <button type="button" onClick={() => setViewer(v => v ? { ...v, zoom: Math.min(1, +(v.zoom + 0.25).toFixed(2)) } : v)} disabled={viewer.zoom >= 1} aria-label="Zoom in" className="p-1.5 rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ZoomIn size={14} aria-hidden="true" /></button>
+                    <button type="button" onClick={() => { const i = (viewer.imageIndex - 1 + viewer.images.length) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Previous image" className="absolute left-2 sm:left-3 top-1/2 -translate-y-1/2 z-10 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronLeft size={20} aria-hidden="true" /></button>
+                    <button type="button" onClick={() => { const i = (viewer.imageIndex + 1) % viewer.images.length; const t = viewer.images[i]; if (t) void loadViewerImage(t.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 z-10 grid place-items-center h-10 w-10 rounded-full bg-white/95 text-zinc-800 shadow-md ring-1 ring-zinc-900/5 hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={20} aria-hidden="true" /></button>
                   </>
                 )}
-                {viewer.url && <a href={viewer.url} download={viewer.name} className="px-2.5 py-1.5 text-xs border border-zinc-200 rounded-md hover:bg-zinc-50 text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
+                {viewerScale > 1 && <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-2 py-1 rounded-md bg-zinc-900/70 text-[11px] text-white pointer-events-none">Drag to move · Double tap to reset</div>}
               </div>
             </div>
-            <div className="relative rounded-lg border border-zinc-200 bg-zinc-950/[0.03] overflow-hidden min-h-[240px] max-h-[72vh] flex items-center justify-center">
-              {viewer.kind === 'image' ? (
-                <>
-                  {viewer.images.length > 1 && (
-                    <button type="button" onClick={() => { const i = (viewer.imageIndex - 1 + viewer.images.length) % viewer.images.length; const target = viewer.images[i]; if (target) void loadViewerImage(target.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Previous image" className="absolute left-2 z-10 p-2 rounded-full bg-white/90 border border-zinc-200 text-zinc-700 shadow-sm hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronLeft size={18} aria-hidden="true" /></button>
-                  )}
-                  <div className="w-full h-full max-h-[72vh] overflow-hidden flex items-center justify-center p-3">
-                    <img
-                      src={viewer.url}
-                      alt={viewer.name}
-                      className="select-none transition-transform duration-150 ease-out"
-                      style={{ maxWidth: '100%', maxHeight: 'calc(72vh - 1.5rem)', objectFit: 'contain', transform: `scale(${viewer.zoom})`, transformOrigin: 'center center' }}
-                      draggable={false}
-                    />
-                  </div>
-                  {viewer.images.length > 1 && (
-                    <button type="button" onClick={() => { const i = (viewer.imageIndex + 1) % viewer.images.length; const target = viewer.images[i]; if (target) void loadViewerImage(target.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 z-10 p-2 rounded-full bg-white/90 border border-zinc-200 text-zinc-700 shadow-sm hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={18} aria-hidden="true" /></button>
-                  )}
-                </>
-              ) : (
-                <iframe src={viewer.url} title={viewer.name} className="w-full h-[72vh] bg-white" />
-              )}
+          ) : (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-3 min-w-0">
+                <p className="text-sm text-zinc-500 truncate">{viewer.mime || 'PDF'}</p>
+                {viewer.url && <a href={viewer.url} download={viewer.name} className="shrink-0 px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
+              </div>
+              <div className="rounded-xl overflow-hidden border border-zinc-200 bg-white">
+                <iframe src={viewer.url} title={viewer.name} className="w-full bg-white" style={{ height: 'min(72vh, 42rem)' }} />
+              </div>
             </div>
-          </div>
+          )
         ) : null}
       </Dialog>
       <Dialog open={bulkDeleteOpen} onClose={() => setBulkDeleteOpen(false)} title="Delete selected">
