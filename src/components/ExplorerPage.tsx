@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X } from 'lucide-react';
+import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, ChevronLeft, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -92,7 +92,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   // Inline unlock for locked folders (expand/collapse model, no navigation)
   const [inlineUnlockId, setInlineUnlockId] = useState<string | null>(null);
   // File viewer (images, PDFs)
-  const [viewer, setViewer] = useState<{ id: string; name: string; mime: string; url: string; kind: 'image' | 'pdf' } | null>(null);
+  type ViewerImage = { id: string; name: string; mime: string };
+  const [viewer, setViewer] = useState<{ id: string; name: string; mime: string; url: string; kind: 'image' | 'pdf'; zoom: number; images: ViewerImage[]; imageIndex: number } | null>(null);
   const [viewerBusy, setViewerBusy] = useState(false);
   const [viewerErr, setViewerErr] = useState('');
   const viewerUrlRef = useRef<string | null>(null);
@@ -153,7 +154,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   function menuItems(id: string, kind: 'folder' | 'item', name: string, prot: string, itemKind?: string, mime?: string) {
     const canCreateInside = kind === 'folder' && (prot !== 'protected' || !!getFolderKey(id));
-    const viewKind = kind === 'item' ? (itemKind === 'txt' || itemKind === 'md' ? 'editor' : (itemKind === 'file' ? getViewKind(mime, name) : null)) : null;
+    const textEditKind = kind === 'item' ? getTextEditKind(itemKind, name, mime) : null;
+    const viewKind = kind === 'item' ? (textEditKind ? 'editor' : (itemKind === 'file' ? getViewKind(mime, name) : null)) : null;
     return (
       <>
         {viewKind === 'editor' && <button onClick={() => { setMenuId(null); openEditor(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> Open</button>}
@@ -385,6 +387,19 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     return null;
   }
 
+  function getTextEditKind(kind?: string, name?: string, mime?: string): 'txt' | 'md' | null {
+    if (kind === 'md') return 'md';
+    if (kind === 'txt') return 'txt';
+    if (kind !== 'file') return null;
+    const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+    if (ext === 'md' || ext === 'markdown') return 'md';
+    if (ext === 'txt') return 'txt';
+    const m = (mime || '').toLowerCase();
+    if (m === 'text/markdown' || m === 'text/x-markdown') return 'md';
+    if (m === 'text/plain') return 'txt';
+    return null;
+  }
+
   function closeViewer() {
     if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
     setViewer(null);
@@ -392,12 +407,10 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setViewerBusy(false);
   }
 
-  async function openFileViewer(id: string) {
-    setSearchQuery('');
-    setSearchResults(null);
+  async function loadViewerImage(id: string, images: ViewerImage[], imageIndex: number) {
+    if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
     setViewerErr('');
     setViewerBusy(true);
-    if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
     try {
       let it = items.find(x => x.id === id) || null;
       if (!it) it = (await db.items.get(id)) || null;
@@ -407,10 +420,39 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       if (!kind) throw new Error('This file type cannot be previewed');
       const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
       viewerUrlRef.current = url;
-      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind });
+      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, zoom: 1, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
     } catch (e: any) {
       setViewerErr(e?.message || 'Could not open file');
-      setViewer({ id, name: 'File', mime: '', url: '', kind: 'image' });
+      setViewer(prev => prev ? { ...prev, name: 'File', kind: 'image' } : { id, name: 'File', mime: '', url: '', kind: 'image', zoom: 1, images, imageIndex });
+    } finally {
+      setViewerBusy(false);
+    }
+  }
+
+  async function openFileViewer(id: string) {
+    setSearchQuery('');
+    setSearchResults(null);
+    setViewerErr('');
+    if (viewerUrlRef.current) { URL.revokeObjectURL(viewerUrlRef.current); viewerUrlRef.current = null; }
+    setViewerBusy(true);
+    try {
+      let it = items.find(x => x.id === id) || null;
+      if (!it) it = (await db.items.get(id)) || null;
+      if (!it) throw new Error('File not found');
+      const imageSiblings = items.filter(x => x.parentId === it.parentId && getViewKind(x.mime, names[x.id] || '') === 'image');
+      const images: ViewerImage[] = Array.from(new Map(imageSiblings.map(x => [x.id, x])).values()).map(x => ({ id: x.id, name: names[x.id] || 'Image', mime: x.mime || '' }));
+      if (getViewKind(it.mime, names[it.id] || '') === 'image' && !images.some(x => x.id === id)) images.push({ id, name: names[it.id] || 'Image', mime: it.mime || '' });
+      images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+      const imageIndex = Math.max(0, images.findIndex(x => x.id === id));
+      const { bytes, mime, name } = await readFileItem(it);
+      const kind = getViewKind(mime, name);
+      if (!kind) throw new Error('This file type cannot be previewed');
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
+      viewerUrlRef.current = url;
+      setViewer({ id, name, mime: mime || 'application/octet-stream', url, kind, zoom: 1, images: kind === 'image' ? images : [], imageIndex: kind === 'image' ? imageIndex : 0 });
+    } catch (e: any) {
+      setViewerErr(e?.message || 'Could not open file');
+      setViewer({ id, name: 'File', mime: '', url: '', kind: 'image', zoom: 1, images: [], imageIndex: 0 });
     } finally {
       setViewerBusy(false);
     }
@@ -842,7 +884,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   >
                     <button
                       onClick={() => {
-                        if (it.kind === 'txt' || it.kind === 'md') openEditor(it.id);
+                        if (getTextEditKind(it.kind, it.name, it.mime)) openEditor(it.id);
                         else if (it.kind === 'file' && getViewKind(it.mime, it.name)) void openFileViewer(it.id);
                       }}
                       className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
@@ -1002,7 +1044,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   async function goToSearchItem(hit: { id: string; name: string; kind: string; size?: number; mime?: string; parentId: string | null }) {
-    if (hit.kind !== 'txt' && hit.kind !== 'md') {
+    const tek = getTextEditKind(hit.kind, hit.name, hit.mime);
+    if (!tek) {
       if (hit.kind === 'file' && getViewKind(hit.mime, hit.name)) {
         setSearchQuery(''); setSearchResults(null);
         await openFileViewer(hit.id);
@@ -1270,7 +1313,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                           <div className={`${childAnim} py-1`}>
                             <div className="flex items-center gap-1" style={{ paddingLeft: (depth + 1) * 16 }}>
                               <span className="shrink-0 w-5 h-5" aria-hidden />
-                              {it.kind === 'txt' || it.kind === 'md' ? (
+                              {getTextEditKind(it.kind, it.name, it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
                                   <FileText size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{it.name}</span>
@@ -1625,7 +1668,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                           <td className="px-3 py-1 overflow-hidden">
                             <div className="flex items-center gap-1" style={{ paddingLeft: 0 }}>
                               <span className="shrink-0 w-5 h-5" aria-hidden />
-                              {it.kind === 'txt' || it.kind === 'md' ? (
+                              {getTextEditKind(it.kind, names[it.id], it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
                                   <FileText size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{names[it.id]}</span>
@@ -1965,26 +2008,52 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
         </div>
       </Dialog>
 
-      <Dialog open={!!viewer || viewerBusy} onClose={closeViewer} title={viewer?.name || (viewerBusy ? 'Opening file…' : 'File viewer')} width="min(96vw, 56rem)">
+      <Dialog open={!!viewer || viewerBusy} onClose={closeViewer} title={viewer?.name || (viewerBusy ? 'Opening file…' : 'File viewer')} width="min(96vw, 60rem)">
         {viewerBusy ? (
-          <div className="py-12 text-center text-sm text-zinc-500">Decrypting and opening…</div>
+          <div className="py-16 text-center text-sm text-zinc-500" role="status" aria-live="polite">Decrypting and opening…</div>
         ) : viewerErr ? (
-          <div className="space-y-3">
+          <div className="space-y-3" role="alert">
             <p className="text-sm text-red-600">{viewerErr}</p>
-            <div className="flex justify-end"><button onClick={closeViewer} className="px-3 py-2 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Close</button></div>
           </div>
         ) : viewer ? (
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
-              <span className="truncate">{viewer.mime || viewer.kind.toUpperCase()}</span>
-              <div className="flex items-center gap-2 shrink-0">
-                {viewer.url && <a href={viewer.url} download={viewer.name} className="px-2 py-1 border border-zinc-300 rounded hover:bg-zinc-50 text-zinc-700">Download</a>}
-                <button onClick={closeViewer} className="px-2 py-1 border border-zinc-300 rounded hover:bg-zinc-50 text-zinc-700">Close</button>
+          <div className="flex flex-col gap-3 -mt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 flex items-center gap-2 text-xs text-zinc-500">
+                <span className="truncate">{viewer.mime || viewer.kind.toUpperCase()}</span>
+                {viewer.kind === 'image' && viewer.images.length > 1 && (
+                  <span className="shrink-0 tabular-nums text-zinc-400">{viewer.imageIndex + 1} / {viewer.images.length}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {viewer.kind === 'image' && (
+                  <>
+                    <button type="button" onClick={() => setViewer(v => v ? { ...v, zoom: Math.max(0.25, +(v.zoom - 0.25).toFixed(2)) } : v)} disabled={viewer.zoom <= 0.25} aria-label="Zoom out" className="p-1.5 rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ZoomOut size={14} aria-hidden="true" /></button>
+                    <span className="text-[11px] tabular-nums text-zinc-500 w-10 text-center" aria-live="polite">{Math.round(viewer.zoom * 100)}%</span>
+                    <button type="button" onClick={() => setViewer(v => v ? { ...v, zoom: Math.min(1, +(v.zoom + 0.25).toFixed(2)) } : v)} disabled={viewer.zoom >= 1} aria-label="Zoom in" className="p-1.5 rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ZoomIn size={14} aria-hidden="true" /></button>
+                  </>
+                )}
+                {viewer.url && <a href={viewer.url} download={viewer.name} className="px-2.5 py-1.5 text-xs border border-zinc-200 rounded-md hover:bg-zinc-50 text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500">Download</a>}
               </div>
             </div>
-            <div className="rounded border border-zinc-200 bg-zinc-50 overflow-hidden min-h-[200px] max-h-[72vh] flex items-center justify-center">
+            <div className="relative rounded-lg border border-zinc-200 bg-zinc-950/[0.03] overflow-hidden min-h-[240px] max-h-[72vh] flex items-center justify-center">
               {viewer.kind === 'image' ? (
-                <img src={viewer.url} alt={viewer.name} className="max-w-full max-h-[72vh] object-contain" />
+                <>
+                  {viewer.images.length > 1 && (
+                    <button type="button" onClick={() => { const i = (viewer.imageIndex - 1 + viewer.images.length) % viewer.images.length; const target = viewer.images[i]; if (target) void loadViewerImage(target.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Previous image" className="absolute left-2 z-10 p-2 rounded-full bg-white/90 border border-zinc-200 text-zinc-700 shadow-sm hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronLeft size={18} aria-hidden="true" /></button>
+                  )}
+                  <div className="w-full h-full max-h-[72vh] overflow-hidden flex items-center justify-center p-3">
+                    <img
+                      src={viewer.url}
+                      alt={viewer.name}
+                      className="select-none transition-transform duration-150 ease-out"
+                      style={{ maxWidth: '100%', maxHeight: 'calc(72vh - 1.5rem)', objectFit: 'contain', transform: `scale(${viewer.zoom})`, transformOrigin: 'center center' }}
+                      draggable={false}
+                    />
+                  </div>
+                  {viewer.images.length > 1 && (
+                    <button type="button" onClick={() => { const i = (viewer.imageIndex + 1) % viewer.images.length; const target = viewer.images[i]; if (target) void loadViewerImage(target.id, viewer.images, i); }} disabled={viewerBusy} aria-label="Next image" className="absolute right-2 z-10 p-2 rounded-full bg-white/90 border border-zinc-200 text-zinc-700 shadow-sm hover:bg-white disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500"><ChevronRight size={18} aria-hidden="true" /></button>
+                  )}
+                </>
               ) : (
                 <iframe src={viewer.url} title={viewer.name} className="w-full h-[72vh] bg-white" />
               )}

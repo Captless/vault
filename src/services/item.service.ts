@@ -55,6 +55,16 @@ export async function createMd(parentId: string | null, name: string) {
   return { ...it, kind: 'md' as ItemKind };
 }
 
+export function textKindFromNameMime(name?: string, mime?: string): 'txt' | 'md' | null {
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  if (ext === 'md' || ext === 'markdown') return 'md';
+  if (ext === 'txt') return 'txt';
+  const m = (mime || '').toLowerCase();
+  if (m === 'text/markdown' || m === 'text/x-markdown') return 'md';
+  if (m === 'text/plain') return 'txt';
+  return null;
+}
+
 export async function getItemMeta(it: DbItem): Promise<ItemMeta> {
   const key = await resolveKeyForParent(it.parentId);
   if (!key) throw new Error('locked');
@@ -107,8 +117,9 @@ export async function uploadFile(parentId: string | null, file: File, onProgress
   const m = await encryptJson(key, meta, 'item-meta');
   const p = await encryptBytes(key, bytes, 'item-payload');
   onProgress?.(100);
+  const textKind = textKindFromNameMime(file.name, file.type);
   const it: DbItem = {
-    id: newId(), parentId, kind: 'file', scope: 'vault',
+    id: newId(), parentId, kind: textKind || 'file', scope: 'vault',
     metaEnc: m.ct, metaIv: m.iv,
     payloadEnc: p.ct, payloadIv: p.iv,
     mime: file.type, size: file.size,

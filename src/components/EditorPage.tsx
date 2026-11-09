@@ -80,7 +80,7 @@ export default function EditorPage({ itemId, onClose }: { itemId?: string; onClo
     <>
       <EditorView
         name={name}
-        kind={item.kind === 'md' ? 'md' : 'txt'}
+        kind={item.kind === 'md' ? 'md' : (item.kind === 'txt' ? 'txt' : (/\.md$/i.test(name) ? 'md' : 'txt'))}
         text={text}
         saving={saving}
         savedAt={savedAt}

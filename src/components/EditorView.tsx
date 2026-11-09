@@ -22,7 +22,7 @@ const COLORS = [
   { label: 'Purple', value: '#7c3aed' },
 ];
 
-type Sel = { start: number; end: number; text: string };
+const FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 24, 28, 32];
 
 interface Props {
   name: string;
@@ -46,39 +46,111 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
   const [font, setFont] = useState(FONTS[0].value);
   const [size, setSize] = useState(14);
   const [color, setColor] = useState('#18181b');
-  const [sel, setSel] = useState<Sel>({ start: 0, end: 0, text: '' });
 
-  function readSel() {
-    const ta = taRef.current;
-    if (!ta) return;
-    const { selectionStart: start, selectionEnd: end } = ta;
-    setSel({ start, end, text: ta.value.slice(start, end) });
-  }
-
-  function replaceRange(newText: string) {
-    const ta = taRef.current;
-    if (!ta) return;
-    const { selectionStart: start, selectionEnd: end } = ta;
-    onTextChange(text.slice(0, start) + newText + text.slice(end));
+  function focusAndSelect(start: number, end: number) {
     requestAnimationFrame(() => {
       const el = taRef.current;
       if (!el) return;
       el.focus();
-      const pos = start + newText.length;
-      el.setSelectionRange(pos, pos);
-      setSel({ start: pos, end: pos, text: '' });
+      el.setSelectionRange(start, end);
     });
   }
 
-  function wrap(open: string, close: string, placeholder: string) {
-    const s = sel.text || placeholder;
-    replaceRange(open + s + close);
+  function applyEdit(nextText: string, selStart: number, selEnd: number) {
+    onTextChange(nextText);
+    focusAndSelect(selStart, selEnd);
   }
 
-  function prefixLines(prefix: string, placeholder: string) {
-    const s = sel.text || placeholder;
-    const lines = s.split('\n').map(l => l.replace(/^[-•]\s*/, '').replace(/^\d+\.\s*/, ''));
-    replaceRange(lines.map(l => prefix + l).join('\n'));
+  function insertAtCursor(snippet: string, cursorOffset = snippet.length) {
+    const ta = taRef.current;
+    if (!ta) return;
+    const { selectionStart: start, selectionEnd: end } = ta;
+    const next = text.slice(0, start) + snippet + text.slice(end);
+    const pos = start + cursorOffset;
+    applyEdit(next, pos, pos);
+  }
+
+  function wrap(open: string, close: string) {
+    const ta = taRef.current;
+    if (!ta) return;
+    const { selectionStart: start, selectionEnd: end, value } = ta;
+    const selected = value.slice(start, end);
+    if (selected) {
+      const next = value.slice(0, start) + open + selected + close + value.slice(end);
+      applyEdit(next, start + open.length, start + open.length + selected.length);
+    } else {
+      const next = value.slice(0, start) + open + close + value.slice(end);
+      const pos = start + open.length;
+      applyEdit(next, pos, pos);
+    }
+  }
+
+  function toggleHeading() {
+    const ta = taRef.current;
+    if (!ta) return;
+    const { selectionStart: start, selectionEnd: end, value } = ta;
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const lineEndIdx = value.indexOf('\n', end);
+    const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
+    const block = value.slice(lineStart, lineEnd);
+    const lines = block.split('\n');
+    const allHeaded = lines.every(l => /^##\s/.test(l));
+    const nextBlock = lines.map(l => allHeaded ? l.replace(/^##\s?/, '') : (l ? `## ${l.replace(/^#+\s*/, '')}` : '## ')).join('\n');
+    const next = value.slice(0, lineStart) + nextBlock + value.slice(lineEnd);
+    applyEdit(next, lineStart, lineStart + nextBlock.length);
+  }
+
+  function insertList(kind: 'ul' | 'ol') {
+    const ta = taRef.current;
+    if (!ta) return;
+    const { selectionStart: start, selectionEnd: end, value } = ta;
+    const marker = kind === 'ul' ? '- ' : '1. ';
+    if (start === end) {
+      // Insert marker only (no placeholder text) — Word-like: just bullet/number + space
+      const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+      const atLineStart = start === lineStart;
+      const snippet = atLineStart ? marker : `\n${marker}`;
+      insertAtCursor(snippet);
+      return;
+    }
+    const block = value.slice(start, end);
+    const lines = block.split('\n').map((l, i) => {
+      const clean = l.replace(/^[-•*]\s+/, '').replace(/^\d+\.\s+/, '').replace(/^\s+/, (m) => m); // preserve indent
+      return kind === 'ul' ? `- ${clean}` : `${i + 1}. ${clean}`;
+    });
+    const nextBlock = lines.join('\n');
+    const next = value.slice(0, start) + nextBlock + value.slice(end);
+    applyEdit(next, start, start + nextBlock.length);
+  }
+
+  function handleEditorKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    const ta = taRef.current;
+    if (!ta) return;
+    const { selectionStart: start, selectionEnd: end, value } = ta;
+    const indent = '  '; // 2 spaces (Word-like tab/indent)
+    if (start === end) {
+      if (e.shiftKey) {
+        const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+        const line = value.slice(lineStart);
+        if (line.startsWith(indent)) applyEdit(value.slice(0, lineStart) + value.slice(lineStart + indent.length), Math.max(lineStart, start - indent.length), Math.max(lineStart, start - indent.length));
+        else if (line.startsWith('\t')) applyEdit(value.slice(0, lineStart) + value.slice(lineStart + 1), Math.max(lineStart, start - 1), Math.max(lineStart, start - 1));
+      } else {
+        insertAtCursor(indent);
+      }
+      return;
+    }
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const lineEndIdx = value.indexOf('\n', end - 1);
+    const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
+    const block = value.slice(lineStart, lineEnd);
+    const lines = block.split('\n');
+    const nextBlock = e.shiftKey
+      ? lines.map(l => l.startsWith(indent) ? l.slice(indent.length) : l.startsWith('\t') ? l.slice(1) : l).join('\n')
+      : lines.map(l => indent + l).join('\n');
+    const next = value.slice(0, lineStart) + nextBlock + value.slice(lineEnd);
+    applyEdit(next, lineStart, lineStart + nextBlock.length);
   }
 
   return (
@@ -106,27 +178,29 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
         <div className={`w-full flex flex-col ${showHeader ? 'max-w-3xl' : 'max-w-4xl'}`}>
 
           <div className="flex flex-wrap items-center gap-1 border border-zinc-200 border-b-0 bg-white rounded-t-lg px-2.5 py-1.5">
-            <select value={font} onChange={e => setFont(e.target.value)} className="h-7 border border-zinc-300 rounded px-1.5 text-xs bg-white" aria-label="Font">
+            <select value={font} onChange={e => setFont(e.target.value)} className="h-8 border border-zinc-300 rounded px-1.5 text-xs bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" aria-label="Font">
               {FONTS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
             </select>
-            <select value={size} onChange={e => setSize(Number(e.target.value))} className="h-7 border border-zinc-300 rounded px-1.5 text-xs bg-white" aria-label="Font size">
-              {[12, 13, 14, 15, 16, 18].map(s => <option key={s} value={s}>{s}px</option>)}
+            <select value={size} onChange={e => setSize(Number(e.target.value))} className="h-8 border border-zinc-300 rounded px-1.5 text-xs bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" aria-label="Font size">
+              {FONT_SIZES.map(s => <option key={s} value={s}>{s}px</option>)}
             </select>
-            <div className="h-4 w-px bg-zinc-200 mx-1" />
-            <button onClick={() => wrap('**', '**', 'bold text')} disabled={!sel.text} className="h-7 min-w-7 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-bold disabled:opacity-40" title="Bold">B</button>
-            <button onClick={() => wrap('*', '*', 'italic text')} disabled={!sel.text} className="h-7 min-w-7 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 italic disabled:opacity-40" title="Italic">I</button>
-            <button onClick={() => wrap('## ', '', 'Heading')} disabled={!sel.text} className="h-7 min-w-7 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-semibold disabled:opacity-40" title="Heading (markdown)">H</button>
-            <div className="h-4 w-px bg-zinc-200 mx-1" />
-            <button onClick={() => prefixLines('• ', 'item')} className="h-7 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50" title="Bulleted list">• List</button>
-            <button onClick={() => prefixLines('1. ', 'item')} className="h-7 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50" title="Numbered list">1. List</button>
-            <div className="h-4 w-px bg-zinc-200 mx-1" />
+            <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => wrap('**', '**')} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Bold (Markdown: **text**)">B</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => wrap('*', '*')} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 italic focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Italic (Markdown: *text*)">I</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => wrap(kind === 'md' ? '<u>' : '', kind === 'md' ? '</u>' : '')} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title={kind === 'md' ? 'Underline (HTML in Markdown)' : 'Underline (visual only in plain text)'} disabled={kind !== 'md'}>U</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={toggleHeading} className="h-8 min-w-8 px-1.5 text-xs rounded border border-zinc-300 hover:bg-zinc-50 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Heading">H</button>
+            <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ul')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Bulleted list (inserts marker; Tab to indent)">• List</button>
+            <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => insertList('ol')} className="h-8 px-2 text-xs rounded border border-zinc-300 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500" title="Numbered list (inserts marker; Tab to indent)">1. List</button>
+            <div className="h-4 w-px bg-zinc-200 mx-1" aria-hidden="true" />
             <div className="flex items-center gap-1" role="group" aria-label="Text color">
               {COLORS.map(c => (
                 <button
                   key={c.value}
                   type="button"
+                  onMouseDown={e => e.preventDefault()}
                   onClick={() => setColor(c.value)}
-                  className={`h-5 w-5 rounded-full border ${color === c.value ? 'border-zinc-900 ring-1 ring-zinc-900 ring-offset-1' : 'border-zinc-300 hover:border-zinc-400'}`}
+                  className={`h-5 w-5 rounded-full border ${color === c.value ? 'border-zinc-900 ring-1 ring-zinc-900 ring-offset-1' : 'border-zinc-300 hover:border-zinc-400'} focus-visible:outline focus-visible:outline-2 focus-visible:outline-zinc-500`}
                   style={{ backgroundColor: c.value }}
                   aria-label={c.label}
                   aria-pressed={color === c.value}
@@ -146,13 +220,12 @@ export default function EditorView({ name, kind, text, saving, savedAt, onTextCh
               <textarea
                 ref={taRef}
                 value={text}
-                onChange={e => { onTextChange(e.target.value); readSel(); }}
-                onSelect={readSel}
-                onClick={readSel}
+                onChange={e => onTextChange(e.target.value)}
+                onKeyDown={handleEditorKeyDown}
                 className="editor-content w-full flex-1 min-h-[50vh] p-6 resize-none focus:outline-none bg-white"
-                style={{ fontFamily: font, fontSize: size, color }}
+                style={{ fontFamily: font, fontSize: size, color, tabSize: 2 }}
                 spellCheck={false}
-                placeholder="Write… select text to format with the toolbar above."
+                placeholder="Write… Use toolbar to format. Tab indents; bullets/numbers insert list markers."
               />
             )}
             <div className="border-t border-zinc-100 bg-zinc-50 px-4 py-2 flex items-center justify-between text-[11px] text-zinc-500">
