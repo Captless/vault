@@ -514,7 +514,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     else await deleteItem(id);
     setSelected(s => { if (!s[id]) return s; const n = { ...s }; delete n[id]; return n; });
     setDeleteTarget(null);
+    setSidebarItems({});
     await load();
+    void loadSidebarItems(parentId ?? 'root');
   }
 
   async function doBulkDelete() {
@@ -527,7 +529,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     }
     setSelected({});
     setBulkDeleteOpen(false);
+    setSidebarItems({});
     await load();
+    void loadSidebarItems(parentId ?? 'root');
   }
 
   async function doRename() {
@@ -1008,7 +1012,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 <div style={{ paddingLeft: (depth + 1) * 16 }}>
                   <form onSubmit={(e) => { e.preventDefault(); void doUnlock(f.id); }} className="max-w-sm space-y-2">
                     <p className="text-xs text-zinc-600 flex items-center gap-1.5"><Lock size={12} /> Enter password for <span className="font-medium text-zinc-800">{fname}</span></p>
-                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Folder password" autoFocus className="w-full border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
+                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Folder password" autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} className="w-full border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
                     {unlockErr && <p className="text-xs text-red-600">{unlockErr}</p>}
                     <div className="flex items-center gap-2">
                       <button type="submit" disabled={busy} className="px-3 py-1.5 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
@@ -1140,7 +1144,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
           {editingId || (decoyMode && decoyEditingId) ? (
             <div>
               <div className="max-w-4xl mx-auto mt-4 mb-2 h-10" />
-              <table className="w-full text-sm bg-white mx-auto max-w-4xl mt-0 border border-zinc-200 rounded-t-lg overflow-visible border-b-0">
+              <table className="w-full table-fixed text-sm bg-white mx-auto max-w-4xl mt-0 border border-zinc-200 rounded-t-lg overflow-hidden border-b-0">
                 <thead>
                   <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
                     <th className="px-3 py-2 font-medium">Name</th>
@@ -1160,7 +1164,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     const sizeLabel = editingId ? fmtSize(editingFile?.size) : decoyDoc ? fmtSize(new TextEncoder().encode(decoyDoc.text || '').byteLength) : fmtSize(parentId ? folderSizes[parentId] : undefined);
                     return (
                       <tr className="bg-zinc-100 border-b-2 border-zinc-300">
-                        <td className="px-3 py-1">
+                        <td className="px-3 py-1 overflow-hidden">
                           <div className="flex items-center gap-1 py-1.5 w-full text-left rounded px-1 -mx-1 min-w-0">
                             <button
                               type="button"
@@ -1264,8 +1268,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     const hasChildren = decoyMode.tree.folders.some(x => x.parentId === f.id) || decoyMode.tree.docs.some(x => x.folderId === f.id);
                     rows.push(
                       <tr key={f.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                        <td className="px-3 py-1">
-                          <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+                        <td className="px-3 py-1 overflow-hidden">
+                          <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: depth * 16 }}>
                             <button
                               type="button"
                               onClick={() => toggleDecoyExpand(f.id)}
@@ -1289,7 +1293,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                         </td>
                         <td className="px-3 py-1 text-xs text-zinc-500">Folder</td>
                         <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                        <td className="px-3 py-1">
+                        <td className="px-3 py-1 overflow-hidden">
                           <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, folders: decoyMode.tree.folders.filter(x => x.id !== f.id), docs: decoyMode.tree.docs.filter(x => x.folderId !== f.id) }); setDecoyExpanded(s => { const n = new Set(s); n.delete(f.id); return n; }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy folder"><Trash2 size={13} /></button>
                         </td>
                       </tr>
@@ -1302,10 +1306,10 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   for (const d of docs) {
                     rows.push(
                       <tr key={d.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                        <td className="px-3 py-1">
-                          <div className="flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
+                        <td className="px-3 py-1 overflow-hidden">
+                          <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: depth * 16 }}>
                             <span className="shrink-0 w-5 h-5" aria-hidden />
-                            <button onClick={() => { setDecoySearchQuery(''); openDecoyDoc(d.id); }} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                            <button onClick={() => { setDecoySearchQuery(''); openDecoyDoc(d.id); }} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 overflow-hidden">
                               <FileText size={15} className="text-zinc-500 shrink-0" />
                               <span className="truncate">{d.name}</span>
                             </button>
@@ -1313,7 +1317,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                         </td>
                         <td className="px-3 py-1 text-xs text-zinc-500">{d.kind.toUpperCase()}</td>
                         <td className="px-3 py-1 text-xs text-zinc-500 hidden sm:table-cell">—</td>
-                        <td className="px-3 py-1">
+                        <td className="px-3 py-1 overflow-hidden">
                           <button onClick={async () => { await persistDecoyTree({ ...decoyMode.tree, docs: decoyMode.tree.docs.filter(x => x.id !== d.id) }); }} className="p-1.5 rounded text-zinc-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete decoy document"><Trash2 size={13} /></button>
                         </td>
                       </tr>
@@ -1373,7 +1377,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                         )}
                       </div>
                     ) : (
-                      <table className="w-full text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-visible">
+                      <table className="w-full table-fixed text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-hidden">
                         <thead>
                           <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
                             <th className="px-3 py-2 font-medium">Name</th>
@@ -1384,7 +1388,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                         </thead>
                         <tbody>
                           <tr className="bg-zinc-100 border-b-2 border-zinc-300">
-                            <td className="px-3 py-1">
+                            <td className="px-3 py-1 overflow-hidden">
                               <div className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 -mx-1 min-w-0">
                                 <button
                                   type="button"
@@ -1414,7 +1418,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             </td>
                             <td className="px-3 py-1 text-xs text-zinc-600 font-medium">Folder</td>
                             <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">—</td>
-                            <td className="px-3 py-1"></td>
+                            <td className="px-3 py-1 overflow-hidden"></td>
                           </tr>
                           {renderDecoyRows(null, 0)}
                           {!decoyHasRootContent && (
@@ -1517,7 +1521,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   </div>
                 )}
               </div>
-              <table className="w-full text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-visible">
+              <table className="w-full table-fixed text-sm bg-white mx-auto max-w-4xl mt-0 mb-4 border border-zinc-200 rounded-lg overflow-hidden">
                 <thead>
                   <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50">
                     <th className="px-3 py-2 font-medium">Name</th>
@@ -1546,7 +1550,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                     return (
                       <Fragment>
                         <tr className="bg-zinc-100 border-b-2 border-zinc-300">
-                          <td className="px-3 py-1">
+                          <td className="px-3 py-1 overflow-hidden">
                             <div className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 -mx-1 min-w-0">
                               <button
                                 type="button"
@@ -1577,7 +1581,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                           </td>
                           <td className="px-3 py-1 text-xs text-zinc-600 font-medium">Folder</td>
                           <td className="px-3 py-1 text-xs text-zinc-600 hidden sm:table-cell">{fmtSize(folderSizes[current.id])}</td>
-                          <td className="px-3 py-1">
+                          <td className="px-3 py-1 overflow-hidden">
                             <button onClick={(e) => openMenuAt(current.id, e)} className="p-1.5 rounded text-zinc-500 hover:text-zinc-900" aria-label="Options" aria-haspopup="menu" aria-expanded={menuId === current.id}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                             </button>
@@ -1602,7 +1606,10 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             value={unlockPw}
                             onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }}
                             placeholder="Folder password"
-                            autoFocus
+                            autoComplete="current-password"
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            spellCheck={false}
                             className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900 bg-white"
                           />
                           {unlockErr && <p className="text-xs text-red-600">{unlockErr}</p>}
@@ -1615,7 +1622,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                       {renderFolderRows(parentId, 0)}
                       {items.map(it => (
                         <tr key={it.id} className="group border-b border-zinc-100 hover:bg-zinc-50 focus-within:bg-zinc-50">
-                          <td className="px-3 py-1">
+                          <td className="px-3 py-1 overflow-hidden">
                             <div className="flex items-center gap-1" style={{ paddingLeft: 0 }}>
                               <span className="shrink-0 w-5 h-5" aria-hidden />
                               {it.kind === 'txt' || it.kind === 'md' ? (

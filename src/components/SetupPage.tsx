@@ -16,7 +16,7 @@ export default function SetupPage({ onDone }: { onDone: () => void }) {
     if (pw.length < 8) { setErr('Password must be at least 8 characters.'); return; }
     if (pw !== pw2) { setErr('Passwords do not match.'); return; }
     setBusy(true);
-    try { await setupVault(pw); onDone(); nav('/app'); }
+    try { await setupVault(pw); onDone(); nav('/app', { replace: true }); }
     catch (e: any) { setErr(e.message); }
     finally { setBusy(false); }
   }

@@ -37,7 +37,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         {!hasVault && <Route path="/setup" element={<SetupPage onDone={() => { setHasVault(true); setUnlocked(true); }} />} />}
-        {hasVault && <Route path="/login" element={<LoginPage onUnlock={() => setUnlocked(true)} />} />}
+        {hasVault && <Route path="/login" element={unlocked ? <Navigate to="/app" replace /> : <LoginPage onUnlock={() => setUnlocked(true)} />} />}
         {unlocked && <Route path="/app/*" element={<ExplorerPage onLock={() => setUnlocked(false)} />} />}
         <Route path="/editor/:id" element={<EditorPage />} />
         <Route path="/decoy-editor/:folderId/:docId" element={<DecoyEditorPage />} />
