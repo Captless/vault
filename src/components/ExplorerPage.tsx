@@ -1669,58 +1669,61 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             </div>
           ) : (
             <div>
-              <div className="max-w-4xl mx-auto mt-4 mb-2 px-3 sm:px-0">
-                <div className="relative">
-                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    placeholder="Search all folders and files..."
-                    className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
-                    aria-label="Search all folders and files"
-                  />
-                  {searchQuery && (
-                    <button type="button" onClick={() => { setSearchQuery(''); setSearchResults(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
-                      <X size={14} />
-                    </button>
-                  )}
-                </div>
-              </div>
-              {searchQuery.trim() ? (
-                <div className="max-w-4xl mx-auto mb-4 border border-zinc-200 rounded-lg bg-white overflow-hidden">
-                  <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
-                    <span>{searchBusy ? 'Searching…' : `${(searchResults?.folders.length ?? 0) + (searchResults?.items.length ?? 0)} results`}</span>
-                    {!searchBusy && searchResults && searchResults.folders.length === 0 && searchResults.items.length === 0 && <span>No matches</span>}
+              <div className="sticky top-0 z-20 pt-3 pb-2 px-3 sm:px-0 bg-[color:var(--app-bg,#f4f4f5)]/95 backdrop-blur supports-[backdrop-filter]:bg-[color:var(--app-bg,#f4f4f5)]/85">
+                <div className="max-w-4xl mx-auto">
+                  <div className="relative">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search all folders and files..."
+                      className="w-full h-10 pl-9 pr-9 text-sm border border-zinc-200 rounded-lg bg-white/95 focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                      aria-label="Search all folders and files"
+                    />
+                    {searchQuery && (
+                      <button type="button" onClick={() => { setSearchQuery(''); setSearchResults(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-900" aria-label="Clear search">
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
-                  {!searchBusy && searchResults && (searchResults.folders.length > 0 || searchResults.items.length > 0) && (
-                    <div className="max-h-[60vh] overflow-auto">
-                      {searchResults.folders.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
-                      {searchResults.folders.map(f => (
-                        <button key={f.id} type="button" onClick={() => void goToSearchFolder(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
-                          <Folder size={15} className="text-zinc-500 shrink-0" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate">{f.name}</span>
-                            <span className="block text-[11px] text-zinc-400 truncate">{f.path}{f.locked ? ' · locked' : ''}</span>
-                          </span>
-                          {f.locked && <Lock size={12} className="text-zinc-400 shrink-0" />}
-                        </button>
-                      ))}
-                      {searchResults.items.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
-                      {searchResults.items.map(it => (
-                        <button key={it.id} type="button" onClick={() => void goToSearchItem(it)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
-                          {it.kind === 'txt' || it.kind === 'md' ? <FileText size={15} className="text-zinc-400 shrink-0" /> : <File size={15} className="text-zinc-400 shrink-0" />}
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate">{it.name}</span>
-                            <span className="block text-[11px] text-zinc-400 truncate">{it.path}</span>
-                          </span>
-                          <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{fmtSize(it.size)}</span>
-                        </button>
-                      ))}
+                  {searchQuery.trim() && (
+                    <div className="mt-2 border border-zinc-200 rounded-lg bg-white overflow-hidden shadow-sm">
+                      <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-200 bg-zinc-50 flex items-center justify-between">
+                        <span>{searchBusy ? 'Searching...' : `${(searchResults?.folders.length ?? 0) + (searchResults?.items.length ?? 0)} results`}</span>
+                        {!searchBusy && searchResults && searchResults.folders.length === 0 && searchResults.items.length === 0 && <span>No matches</span>}
+                      </div>
+                      {!searchBusy && searchResults && (searchResults.folders.length > 0 || searchResults.items.length > 0) && (
+                        <div className="max-h-[50vh] sm:max-h-[60vh] overflow-auto">
+                          {searchResults.folders.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Folders</div>}
+                          {searchResults.folders.map(f => (
+                            <button key={f.id} type="button" onClick={() => void goToSearchFolder(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                              <Folder size={15} className="text-zinc-500 shrink-0" />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{f.name}</span>
+                                <span className="block text-[11px] text-zinc-400 truncate">{f.path}{f.locked ? ' · locked' : ''}</span>
+                              </span>
+                              {f.locked && <Lock size={12} className="text-zinc-400 shrink-0" />}
+                            </button>
+                          ))}
+                          {searchResults.items.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 bg-zinc-50/50 border-b border-zinc-100">Files</div>}
+                          {searchResults.items.map(it => (
+                            <button key={it.id} type="button" onClick={() => void goToSearchItem(it)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 text-left border-b border-zinc-100 last:border-b-0">
+                              {(() => { const V = getFileVisual(it.name, it.mime).Icon; return <V size={15} className="text-zinc-400 shrink-0" />; })()}
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{it.name}</span>
+                                <span className="block text-[11px] text-zinc-400 truncate">{it.path}</span>
+                              </span>
+                              <span className="text-[11px] text-zinc-400 shrink-0 tabular-nums">{fmtSize(it.size)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              ) : (
+              </div>
+              {!searchQuery.trim() && (
               <>
               <div className="max-w-4xl mx-auto mt-0 mb-2 h-10">
                 {selectedCount > 0 && (
