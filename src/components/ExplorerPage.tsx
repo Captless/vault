@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Folder, FileText, File, Lock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X } from 'lucide-react';
+import { Folder, FileText, File, Lock, Unlock, Settings, Upload, Plus, Trash2, ChevronRight, Undo2, FolderOpen, LogOut, Database, HardDrive, Download, Pencil, Search, X } from 'lucide-react';
 import { db } from '../db/database';
 import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
@@ -86,6 +86,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   const searchItemNames = useRef<Record<string, string>>({});
   // Create/upload can target a specific folder (3-dots "Create inside")
   const [createTargetParentId, setCreateTargetParentId] = useState<string | null | undefined>(undefined); // undefined = use current parentId
+  const [decoyCreateTarget, setDecoyCreateTarget] = useState<{ rootId: string; parentId: string | null } | null>(null);
   const uploadHereRef = useRef<HTMLInputElement>(null);
   const [uploadTargetId, setUploadTargetId] = useState<string | null>(null);
   // Inline unlock for locked folders (expand/collapse model, no navigation)
@@ -132,9 +133,18 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     const rawId = menuId.startsWith('decoy:') ? menuId.split(':').slice(2).join(':') : menuId;
     const name = dn.kind === 'folder' ? (dn.folder?.name || 'Folder') : (dn.doc?.name || 'Document');
     const isDoc = dn.kind === 'doc';
+    const isFolder = dn.kind === 'folder';
     return (
       <>
         {isDoc && <button onClick={() => { setMenuId(null); openDecoyDoc(dn.rootId, rawId); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> Open</button>}
+        {isFolder && (
+          <>
+            <button onClick={() => { setMenuId(null); setDecoyCreateTarget({ rootId: dn.rootId, parentId: rawId }); setCreateTargetParentId(undefined); setCreateKind('folder'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Folder size={12} /> New subfolder</button>
+            <button onClick={() => { setMenuId(null); setDecoyCreateTarget({ rootId: dn.rootId, parentId: rawId }); setCreateTargetParentId(undefined); setCreateKind('txt'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FileText size={12} /> New text file</button>
+            <button onClick={() => { setMenuId(null); setDecoyCreateTarget({ rootId: dn.rootId, parentId: rawId }); setCreateTargetParentId(undefined); setCreateKind('md'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FileText size={12} /> New markdown</button>
+            <div className="my-1 border-t border-zinc-100" />
+          </>
+        )}
         <button onClick={() => { setMenuId(null); setRenameTarget({ type: dn.kind === 'folder' ? 'folder' : 'item', id: menuId, name, decoy: { rootId: dn.rootId, rawId } }); setRenameValue(name); setRenameErr(''); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Pencil size={12} /> Rename</button>
         <button onClick={() => { setMenuId(null); setDeleteTarget({ type: dn.kind === 'folder' ? 'folder' : 'item', id: menuId, name, decoy: { rootId: dn.rootId, rawId } }); }} className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-red-50 text-red-600 w-full text-left"><Trash2 size={12} /> Delete</button>
       </>
@@ -473,6 +483,40 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   async function doCreate() {
+    if (decoyCreateTarget) {
+      const { rootId, parentId: decoyParentId } = decoyCreateTarget;
+      const tree = decoyActive[rootId];
+      if (!tree) { setDecoyCreateTarget(null); setShowCreate(false); return; }
+      const raw = createName.trim();
+      const defaultName = createKind === 'folder' ? 'New Folder' : createKind === 'txt' ? 'New Text Document.txt' : 'New Markdown.md';
+      const input = raw || defaultName;
+      const siblings = [
+        ...tree.folders.filter(f => f.parentId === decoyParentId).map(f => f.name.toLowerCase()),
+        ...tree.docs.filter(d => d.folderId === decoyParentId).map(d => d.name.toLowerCase()),
+      ];
+      const existing = new Set<string>(siblings);
+      function uniqueName(base: string, isFile: boolean) {
+        let candidate = base;
+        if (!existing.has(candidate.toLowerCase())) return candidate;
+        let stem = base; let ext = '';
+        if (isFile) { const m = base.match(/^(.*?)(\.[^.]*)$/); if (m) { stem = m[1] || base; ext = m[2]; } }
+        for (let i = 1; ; i++) { candidate = `${stem} (${i})${ext}`; if (!existing.has(candidate.toLowerCase())) return candidate; }
+      }
+      let next = { ...tree, folders: [...tree.folders], docs: [...tree.docs] };
+      if (createKind === 'folder') {
+        next.folders.push({ id: newDecoyId(), parentId: decoyParentId, name: uniqueName(input, false) });
+      } else if (createKind === 'txt') {
+        const withExt = input.toLowerCase().endsWith('.txt') ? input : input + '.txt';
+        next.docs.push({ id: newDecoyId(), folderId: decoyParentId, name: uniqueName(withExt, true), kind: 'txt', text: '' });
+      } else {
+        const withExt = input.toLowerCase().endsWith('.md') ? input : input + '.md';
+        next.docs.push({ id: newDecoyId(), folderId: decoyParentId, name: uniqueName(withExt, true), kind: 'md', text: '' });
+      }
+      persistDecoyTreeForRoot(rootId, next);
+      if (decoyParentId) setDecoyExpanded(s => new Set(s).add(decoyParentId));
+      setCreateName(''); setCreateErr(''); setShowCreate(false); setDecoyCreateTarget(null);
+      return;
+    }
     const targetParentId = createTargetParentId !== undefined ? createTargetParentId : parentId;
     const raw = createName.trim();
     const defaultName = createKind === 'folder' ? 'New Folder' : createKind === 'txt' ? 'New Text Document.txt' : 'New Markdown.md';
@@ -771,7 +815,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             >
               <Folder size={12} className="shrink-0 text-zinc-500" />
               <span className="truncate">{treeNames[f.id] ?? 'Folder'}</span>
-              {locked && <Lock size={10} className="ml-auto text-zinc-400 shrink-0" />}
+              {locked ? <Lock size={10} className="ml-auto text-zinc-400 shrink-0" /> : (isProtected && (decoyTree || getFolderKey(f.id))) ? <Unlock size={10} className="ml-auto text-emerald-600 shrink-0" aria-label="Unlocked" /> : null}
             </button>
             {/* Sidebar hover menu — appears on hover of the row */}
             <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-100">
@@ -1157,7 +1201,11 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   >
                     <Folder size={15} className="text-zinc-500 shrink-0" />
                     <span className="truncate">{fname}</span>
-                    {locked && <span title="Locked" className="ml-0.5 flex items-center gap-1 text-[10px] leading-none text-zinc-600 border border-zinc-300 bg-zinc-100 rounded px-1 py-0.5 shrink-0"><Lock size={10} /> locked</span>}
+                    {locked ? (
+                      <span title="Locked" className="ml-0.5 flex items-center gap-1 text-[10px] leading-none text-zinc-600 border border-zinc-300 bg-zinc-100 rounded px-1 py-0.5 shrink-0"><Lock size={10} /> locked</span>
+                    ) : (isProtected && (decoyTree || getFolderKey(f.id))) ? (
+                      <span title="Unlocked" className="ml-0.5 flex items-center gap-1 text-[10px] leading-none text-emerald-700 border border-emerald-200 bg-emerald-50 rounded px-1 py-0.5 shrink-0"><Unlock size={10} /> unlocked</span>
+                    ) : null}
                   </button>
                 </div>
               </div>
@@ -1638,9 +1686,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             <Upload size={14} /> Upload files
                             <input type="file" multiple className="hidden" onChange={e => { closePlusMenu(); void onUpload(e); }} />
                           </label>
-                          <button onClick={() => { closePlusMenu(); setCreateTargetParentId(undefined); setCreateKind('folder'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
-                          <button onClick={() => { closePlusMenu(); setCreateTargetParentId(undefined); setCreateKind('txt'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New text file</button>
-                          <button onClick={() => { closePlusMenu(); setCreateTargetParentId(undefined); setCreateKind('md'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New markdown</button>
+                          <button onClick={() => { closePlusMenu(); setDecoyCreateTarget(null); setCreateTargetParentId(undefined); setCreateKind('folder'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><Folder size={14} /> New folder</button>
+                          <button onClick={() => { closePlusMenu(); setDecoyCreateTarget(null); setCreateTargetParentId(undefined); setCreateKind('txt'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New text file</button>
+                          <button onClick={() => { closePlusMenu(); setDecoyCreateTarget(null); setCreateTargetParentId(undefined); setCreateKind('md'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-100 text-left"><FileText size={14} /> New markdown</button>
                         </div>
                       </>
                     )}
@@ -1689,7 +1737,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
       })()}
 
       <input ref={uploadHereRef} type="file" multiple className="hidden" onChange={e => void onUpload(e)} />
-      <Dialog open={showCreate} onClose={() => { setShowCreate(false); setCreateTargetParentId(undefined); }} title={createKind === 'folder' ? 'New folder' : createKind === 'txt' ? 'New text file' : 'New markdown file'}>
+      <Dialog open={showCreate} onClose={() => { setShowCreate(false); setCreateTargetParentId(undefined); setDecoyCreateTarget(null); }} title={createKind === 'folder' ? 'New folder' : createKind === 'txt' ? 'New text file' : 'New markdown file'}>
         <div className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-zinc-600 mb-1.5">Name</label>
@@ -1697,7 +1745,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
             {createErr && <p className="mt-1.5 text-xs text-red-600">{createErr}</p>}
           </div>
           <div className="flex justify-end gap-2 pt-1">
-            <button onClick={() => { setShowCreate(false); setCreateTargetParentId(undefined); }} className="px-3 py-2 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
+            <button onClick={() => { setShowCreate(false); setCreateTargetParentId(undefined); setDecoyCreateTarget(null); }} className="px-3 py-2 text-sm rounded border border-zinc-300 hover:bg-zinc-50">Cancel</button>
             <button onClick={doCreate} className="px-4 py-2 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800">Create</button>
           </div>
         </div>
