@@ -6,7 +6,7 @@ import { deriveKey, randomBytes, toB64, fromB64 } from '../security/kdf';
 import { importAesKey } from '../security/encryption';
 import { encryptBytes, decryptBytes } from '../security/encryption';
 import { listFolders, createFolder, getFolderMeta, deleteFolder } from '../services/folder.service';
-import { listItems, createTxt, createMd, deleteItem, getItemMeta, uploadFile, readFileItem } from '../services/item.service';
+import { listItems, createTxt, createMd, deleteItem, getItemMeta, uploadFile, readFileItem, getTextEditorMode } from '../services/item.service';
 import { unlockFolder, clearSession, getFolderKey } from '../services/crypto.service';
 import { getDecoyTree, saveDecoyTree, deleteDecoyTree, newDecoyId, getDecoy } from '../services/decoy.service';
 import Dialog from './Dialog';
@@ -163,12 +163,15 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
 
   function menuItems(id: string, kind: 'folder' | 'item', name: string, prot: string, itemKind?: string, mime?: string) {
     const canCreateInside = kind === 'folder' && (prot !== 'protected' || !!getFolderKey(id));
-    const textEditKind = kind === 'item' ? getTextEditKind(itemKind, name, mime) : null;
-    const viewKind = kind === 'item' ? (textEditKind ? 'editor' : (itemKind === 'file' ? getViewKind(mime, name) : null)) : null;
+    const fileViewKind = kind === 'item' ? getViewKind(mime, name) : null;
+    const textEditKind = kind === 'item' && !fileViewKind ? getTextEditKind(itemKind, name, mime) : null;
+    const viewKind = fileViewKind || (textEditKind ? 'editor' : null);
+    const canDownload = kind === 'item' && itemKind === 'file';
     return (
       <>
         {viewKind === 'editor' && <button onClick={() => { setMenuId(null); openEditor(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> Open</button>}
         {(viewKind === 'image' || viewKind === 'pdf') && <button onClick={() => { setMenuId(null); void openFileViewer(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><FolderOpen size={12} /> View</button>}
+        {canDownload && <button onClick={() => { setMenuId(null); void downloadItem(id); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Download size={12} /> Download</button>}
         {canCreateInside && (
           <>
             <button onClick={() => { setMenuId(null); setCreateTargetParentId(id); setCreateKind('folder'); setCreateName(''); setCreateErr(''); setShowCreate(true); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-100 text-left"><Folder size={12} /> New subfolder</button>
@@ -396,17 +399,8 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     return null;
   }
 
-  function getTextEditKind(kind?: string, name?: string, mime?: string): 'txt' | 'md' | null {
-    if (kind === 'md') return 'md';
-    if (kind === 'txt') return 'txt';
-    if (kind !== 'file') return null;
-    const ext = (name || '').split('.').pop()?.toLowerCase() || '';
-    if (ext === 'md' || ext === 'markdown') return 'md';
-    if (ext === 'txt') return 'txt';
-    const m = (mime || '').toLowerCase();
-    if (m === 'text/markdown' || m === 'text/x-markdown') return 'md';
-    if (m === 'text/plain') return 'txt';
-    return null;
+  function getTextEditKind(kind?: string, name?: string, mime?: string) {
+    return getTextEditorMode(name, mime, kind);
   }
 
   function resetViewerTransform() {
@@ -504,6 +498,24 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
     setSearchQuery('');
     setSearchResults(null);
     setEditingId(id);
+  }
+
+  async function downloadItem(id: string) {
+    try {
+      const it = await db.items.get(id);
+      if (!it) throw new Error('File not found');
+      const { bytes, mime, name } = await readFileItem(it);
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'application/octet-stream' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name || names[id] || 'download';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (e: any) {
+      alert(e?.message || 'Could not download file');
+    }
   }
 
   // Navigate/open folder. In expand/collapse model, locked folders unlock inline (no navigation).
@@ -959,8 +971,9 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                   >
                     <button
                       onClick={() => {
-                        if (getTextEditKind(it.kind, it.name, it.mime)) openEditor(it.id);
-                        else if (it.kind === 'file' && getViewKind(it.mime, it.name)) void openFileViewer(it.id);
+                        if (it.kind === 'file' && getViewKind(it.mime, it.name)) { void openFileViewer(it.id); return; }
+                        if (getTextEditKind(it.kind, it.name, it.mime)) { openEditor(it.id); return; }
+                        if (it.kind === 'file') void downloadItem(it.id);
                       }}
                       className="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0"
                       title={it.name}
@@ -1119,36 +1132,36 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
   }
 
   async function goToSearchItem(hit: { id: string; name: string; kind: string; size?: number; mime?: string; parentId: string | null }) {
-    const tek = getTextEditKind(hit.kind, hit.name, hit.mime);
-    if (!tek) {
-      if (hit.kind === 'file' && getViewKind(hit.mime, hit.name)) {
-        setSearchQuery(''); setSearchResults(null);
-        await openFileViewer(hit.id);
-        return;
-      }
-      // Navigate to its parent folder for non-editor files
-      if (hit.parentId) { const pf = treeFolders.find(x => x.id === hit.parentId); if (pf) { setSearchQuery(''); setSearchResults(null); await openFolder(pf); } }
-      else { setSearchQuery(''); setSearchResults(null); leaveCurrentFolder(); setLockedId(null); setParentId(null); setCrumbs([{ id: null, name: 'All' }]); }
+    setSearchQuery(''); setSearchResults(null);
+    if (hit.kind === 'file' && getViewKind(hit.mime, hit.name)) {
+      await openFileViewer(hit.id);
       return;
     }
-    setSearchQuery(''); setSearchResults(null);
-    if (hit.parentId) {
-      const pf = treeFolders.find(x => x.id === hit.parentId) || null;
-      if (pf) {
+    if (getTextEditKind(hit.kind, hit.name, hit.mime)) {
+      if (hit.parentId) {
+        const pf = treeFolders.find(x => x.id === hit.parentId) || null;
+        if (pf) {
+          leaveCurrentFolder();
+          setLockedId(null);
+          setCrumbs(pathTo(pf));
+          setParentId(pf.id);
+        }
+      } else {
         leaveCurrentFolder();
         setLockedId(null);
-        setCrumbs(pathTo(pf));
-        setParentId(pf.id);
+        setParentId(null);
+        setCrumbs([{ id: null, name: 'All' }]);
       }
-    } else {
-      leaveCurrentFolder();
-      setLockedId(null);
-      setParentId(null);
-      setCrumbs([{ id: null, name: 'All' }]);
+      setNames(n => ({ ...n, [hit.id]: hit.name }));
+      setEditingId(hit.id);
+      return;
     }
-    // ensure names include the hit so editor chrome can resolve
-    setNames(n => ({ ...n, [hit.id]: hit.name }));
-    setEditingId(hit.id);
+    if (hit.kind === 'file') {
+      await downloadItem(hit.id);
+      return;
+    }
+    if (hit.parentId) { const pf = treeFolders.find(x => x.id === hit.parentId); if (pf) await openFolder(pf); }
+    else { leaveCurrentFolder(); setLockedId(null); setParentId(null); setCrumbs([{ id: null, name: 'All' }]); }
   }
 
   // Render decoy (fake) folder contents inline when a protected folder is decoy-revealed
@@ -1349,7 +1362,7 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                 <div className="px-3 py-3 min-w-0" style={{ paddingLeft: Math.min((depth + 1) * 16 + 12, 28) }}>
                   <form onSubmit={(e) => { e.preventDefault(); void doUnlock(f.id); }} className="w-full max-w-sm space-y-2 min-w-0">
                     <p className="text-xs text-zinc-600 flex items-start gap-1.5 min-w-0"><Lock size={12} className="shrink-0 mt-0.5" /> <span className="min-w-0 break-words">Password for <span className="font-medium text-zinc-800">{fname}</span></span></p>
-                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Password" autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck={false} className="w-full min-w-0 border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
+                    <input type="password" value={unlockPw} onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }} placeholder="Password" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} name="vault-unlock-pw" data-lpignore="true" data-1p-ignore="true" data-form-type="other" className="w-full min-w-0 border border-zinc-300 rounded px-3 py-2 text-sm bg-white focus:border-zinc-900" />
                     {unlockErr && <p className="text-xs text-red-600" role="alert">{unlockErr}</p>}
                     <div className="flex flex-wrap items-center gap-2">
                       <button type="submit" disabled={busy} className="px-3 py-1.5 text-sm rounded bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Unlocking…' : 'Unlock'}</button>
@@ -1388,13 +1401,18 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                           <div className={`${childAnim} py-1`}>
                             <div className="flex items-center gap-1" style={{ paddingLeft: (depth + 1) * 16 }}>
                               <span className="shrink-0 w-5 h-5" aria-hidden />
-                              {getTextEditKind(it.kind, it.name, it.mime) ? (
+                              {it.kind === 'file' && getViewKind(it.mime, it.name) ? (
+                                <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <span className="truncate">{it.name}</span>
+                                </button>
+                              ) : getTextEditKind(it.kind, it.name, it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
                                   <FileText size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
-                              ) : it.kind === 'file' && getViewKind(it.mime, it.name) ? (
-                                <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                              ) : it.kind === 'file' ? (
+                                <button onClick={() => void downloadItem(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 hover:underline">
                                   <File size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{it.name}</span>
                                 </button>
@@ -1734,10 +1752,14 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                             value={unlockPw}
                             onChange={e => { setUnlockPw(e.target.value); setUnlockErr(''); }}
                             placeholder="Folder password"
-                            autoComplete="current-password"
+                            autoComplete="off"
                             autoCorrect="off"
                             autoCapitalize="off"
                             spellCheck={false}
+                            name="vault-unlock-pw-card"
+                            data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-form-type="other"
                             className="w-full border border-zinc-300 rounded px-3 py-2 text-sm focus:border-zinc-900 bg-white"
                           />
                           {unlockErr && <p className="text-xs text-red-600" role="alert">{unlockErr}</p>}
@@ -1753,13 +1775,18 @@ export default function ExplorerPage({ onLock }: { onLock?: () => void }) {
                           <td className="px-3 py-1 overflow-hidden">
                             <div className="flex items-center gap-1" style={{ paddingLeft: 0 }}>
                               <span className="shrink-0 w-5 h-5" aria-hidden />
-                              {getTextEditKind(it.kind, names[it.id], it.mime) ? (
+                              {it.kind === 'file' && getViewKind(it.mime, names[it.id]) ? (
+                                <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                                  <File size={15} className="text-zinc-500 shrink-0" />
+                                  <span className="truncate">{names[it.id]}</span>
+                                </button>
+                              ) : getTextEditKind(it.kind, names[it.id], it.mime) ? (
                                 <button onClick={() => openEditor(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
                                   <FileText size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>
-                              ) : it.kind === 'file' && getViewKind(it.mime, names[it.id]) ? (
-                                <button onClick={() => void openFileViewer(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0">
+                              ) : it.kind === 'file' ? (
+                                <button onClick={() => void downloadItem(it.id)} className="flex items-center gap-2 py-1.5 w-full text-left rounded px-1 min-w-0 hover:underline">
                                   <File size={15} className="text-zinc-500 shrink-0" />
                                   <span className="truncate">{names[it.id]}</span>
                                 </button>

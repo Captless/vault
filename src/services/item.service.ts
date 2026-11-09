@@ -4,6 +4,60 @@ import { encryptJson, decryptJson, encryptBytes, decryptBytes } from '../securit
 import { newId } from './folder.service';
 import type { DbItem, ItemMeta, ItemKind } from '../types';
 
+export type TextEditorMode = 'markdown' | 'plain';
+
+const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx']);
+const TEXT_EXTS = new Set([
+  'txt', 'text', 'md', 'markdown', 'mdx',
+  'html', 'htm', 'xhtml', 'xml', 'svg-src', // svg handled as image viewer by default; allow source-open paths only if needed
+  'json', 'jsonc', 'json5', 'map',
+  'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'config', 'properties',
+  'csv', 'tsv', 'log', 'out',
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts',
+  'css', 'scss', 'sass', 'less',
+  'py', 'pyw', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'groovy', 'gradle',
+  'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'hh', 'hxx', 'cs', 'fs', 'fsx',
+  'php', 'phtml', 'swift', 'dart', 'lua', 'pl', 'pm', 'r',
+  'sh', 'bash', 'zsh', 'fish', 'ps1', 'psm1', 'psd1', 'bat', 'cmd',
+  'sql', 'graphql', 'gql', 'prisma',
+  'vue', 'svelte', 'astro',
+  'env', 'gitignore', 'gitattributes', 'editorconfig', 'npmrc', 'nvmrc', 'prettierrc', 'eslintrc', 'babelrc',
+  'dockerfile', 'makefile', 'cmake', 'lock',
+]);
+const TEXT_BASENAMES = new Set([
+  'dockerfile', 'makefile', 'cmakelists.txt', '.gitignore', '.gitattributes', '.editorconfig', '.env', '.npmrc', '.nvmrc',
+  'license', 'readme', 'changelog',
+]);
+
+export function getTextEditorMode(name?: string, mime?: string, itemKind?: string): TextEditorMode | null {
+  if (itemKind === 'md') return 'markdown';
+  if (itemKind === 'txt') return 'plain';
+  if (itemKind && itemKind !== 'file') return null;
+
+  const rawName = (name || '').trim();
+  const lowerName = rawName.toLowerCase();
+  const base = lowerName.split(/[\\/]/).pop() || '';
+  const ext = base.includes('.') ? (base.split('.').pop() || '') : '';
+  const m = (mime || '').toLowerCase().split(';')[0].trim();
+
+  if (m === 'text/markdown' || m === 'text/x-markdown') return 'markdown';
+  if (MARKDOWN_EXTS.has(ext)) return 'markdown';
+
+  if (m.startsWith('text/')) return 'plain';
+  if (m === 'application/json' || m === 'application/ld+json' || m.endsWith('+json')) return 'plain';
+  if (m === 'application/xml' || m === 'text/xml' || m.endsWith('+xml')) return 'plain';
+  if (m === 'application/javascript' || m === 'application/x-javascript' || m === 'application/typescript') return 'plain';
+  if (m === 'application/x-yaml' || m === 'application/yaml' || m === 'application/toml') return 'plain';
+  if (m === 'application/sql' || m === 'application/graphql' || m === 'application/x-sh') return 'plain';
+
+  if (ext && TEXT_EXTS.has(ext)) return 'plain';
+  if (base && TEXT_BASENAMES.has(base)) return 'plain';
+  // dotfiles like .env.local
+  if (base.startsWith('.') && base.length > 1) return 'plain';
+
+  return null;
+}
+
 export async function resolveKeyForParent(parentId: string | null): Promise<CryptoKey | null> {
   // walk up
   let cur = parentId;
@@ -56,12 +110,9 @@ export async function createMd(parentId: string | null, name: string) {
 }
 
 export function textKindFromNameMime(name?: string, mime?: string): 'txt' | 'md' | null {
-  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
-  if (ext === 'md' || ext === 'markdown') return 'md';
-  if (ext === 'txt') return 'txt';
-  const m = (mime || '').toLowerCase();
-  if (m === 'text/markdown' || m === 'text/x-markdown') return 'md';
-  if (m === 'text/plain') return 'txt';
+  const mode = getTextEditorMode(name, mime);
+  if (mode === 'markdown') return 'md';
+  if (mode === 'plain' && ((mime || '').toLowerCase() === 'text/plain' || /\.(txt|text)$/i.test(name || ''))) return 'txt';
   return null;
 }
 
